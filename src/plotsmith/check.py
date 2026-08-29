@@ -20,6 +20,7 @@ import argparse
 import io
 import json
 import re
+import subprocess
 import sys
 import warnings
 from contextlib import redirect_stdout
@@ -114,27 +115,48 @@ def main(argv=None):
                     help='directory holding the documents (.qmd, .ipynb)')
     ap.add_argument('names', nargs='*', help='document stems; default all')
     ap.add_argument('--figs', type=Path, help='also write each figure here')
+    ap.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
 
     docs = a.docs.resolve()
     # The documents import their own domain modules (data loaders, semantic
     # colour maps) from the directory they live in.
     sys.path.insert(0, str(docs))
+    targets = [doc for doc
+               in sorted([*docs.glob('*.qmd'), *docs.glob('*.ipynb')])
+               if not a.names or doc.stem in a.names]
 
     if a.figs:
         a.figs.mkdir(parents=True, exist_ok=True)
-    total = 0
-    for doc in sorted([*docs.glob('*.qmd'), *docs.glob('*.ipynb')]):
-        if a.names and doc.stem not in a.names:
-            continue
-        n, found = check(doc, a.figs)
-        total += len(found)
-        print(f'{doc.name:28} {n:2} figures  '
-              f'{f"{len(found)} overlap(s)" if found else "clean"}')
-        for line in found:
-            print(line)
-    print(f'\nTOTAL: {total} overlap(s)')
-    return 1 if total else 0
+
+    if a.worker:
+        total = 0
+        for doc in targets:
+            n, found = check(doc, a.figs)
+            total += len(found)
+            print(f'{doc.name:28} {n:2} figures  '
+                  f'{f"{len(found)} overlap(s)" if found else "clean"}',
+                  flush=True)
+            for line in found:
+                print(line, flush=True)
+        return 1 if total else 0
+
+    # One subprocess per document: a document's own renderer gives it a
+    # fresh interpreter, and a batch of data-heavy documents run in one
+    # process accumulates into a MemoryError none of them hits alone.
+    bad = 0
+    for doc in targets:
+        cmd = [sys.executable, '-m', 'plotsmith.check', '--worker',
+               str(docs), doc.stem]
+        if a.figs:
+            cmd += ['--figs', str(a.figs)]
+        rc = subprocess.run(cmd).returncode
+        if rc not in (0, 1):
+            # The document itself crashed; surface that, don't count it.
+            return rc
+        bad += rc
+    print(f'\nTOTAL: {bad} document(s) with overlaps')
+    return 1 if bad else 0
 
 
 if __name__ == '__main__':
