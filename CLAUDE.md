@@ -1,11 +1,11 @@
 # CLAUDE.md
 
 Shared matplotlib figure library used by every research project via a git
-dependency (`uv add git+https://github.com/fqueiro/fig-style`). README.md
+dependency (`uv add git+https://github.com/fqueiro/plotsmith`). README.md
 holds the user-facing rationale; this file holds working rules.
 
-- The library is `src/fig_style/__init__.py` (style, labelling engine, plot
-  helpers, export) plus `src/fig_style/check.py` (the `fig-check` CLI).
+- The library is `src/plotsmith/__init__.py` (style, labelling engine, plot
+  helpers, export) plus `src/plotsmith/check.py` (the `fig-check` CLI).
   Single module by design: the placement machinery is tightly coupled and
   the public API is small.
 - Run `uv run pytest` before committing; every commit may be pinned by a

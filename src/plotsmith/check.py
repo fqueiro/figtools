@@ -4,7 +4,7 @@ Direct labelling fails silently: a label landing on a line, on a marker, or on
 another label still renders and still raises nothing, so it survives until
 somebody looks at the picture. This runs a document's code the way its
 renderer would (the python chunks of a .qmd, the code cells of a .ipynb) and
-measures each figure it produces with `fig_style.collisions`, which is quicker
+measures each figure it produces with `plotsmith.collisions`, which is quicker
 than rendering and reading, and does not depend on noticing.
 
     uv run fig-check code
@@ -30,7 +30,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from fig_style import collisions
+from plotsmith import collisions
 
 CHUNK = re.compile(r'^```\{python\}\s*$(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 FIGSIZE = re.compile(r'^\s*fig-(width|height):\s*([\d.]+)\s*$', re.MULTILINE)

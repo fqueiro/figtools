@@ -110,7 +110,7 @@ def _text_size():
     try:
         return float(size)
     except (TypeError, ValueError):
-        raise RuntimeError('fig_style helpers need setup() to have run '
+        raise RuntimeError('plotsmith helpers need setup() to have run '
                            f'(tick label size is {size!r})') from None
 
 

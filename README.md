@@ -1,4 +1,4 @@
-# fig-style
+# plotsmith
 
 Matplotlib figure style for research documents, following Kieran Healy's
 *Data Visualization* practices: Tol vibrant palette in fixed order, direct
@@ -11,26 +11,26 @@ or another label.
 ## Install
 
 ```
-uv add git+https://github.com/fqueiro/fig-style
+uv add git+https://github.com/fqueiro/plotsmith
 ```
 
 Each project pins the commit it resolved in its `uv.lock`, so the library can
 evolve without silently changing the figures of a finished paper; upgrade a
-project deliberately with `uv lock --upgrade-package fig-style`.
+project deliberately with `uv lock --upgrade-package plotsmith`.
 
 ## Use
 
 ```python
-import fig_style as ts
+import plotsmith as ps
 
-ts.setup()                      # once per document; base=11 by default
+ps.setup()                      # once per document; base=11 by default
 fig, ax = plt.subplots()
 ax.plot(years, portugal, label='Portugal')
 ax.plot(years, north, label='North')
-ts.band(ax, years, lo, hi)      # CI ribbon, inherits the line's colour
-ts.refline(ax, 1, 'parity')
-ts.label_lines(ax)              # direct labels replace the legend
-ts.save(fig, '../results/figures/relative_tfp')
+ps.band(ax, years, lo, hi)      # CI ribbon, inherits the line's colour
+ps.refline(ax, 1, 'parity')
+ps.label_lines(ax)              # direct labels replace the legend
+ps.save(fig, '../results/figures/relative_tfp')
 ```
 
 `save` writes `relative_tfp.pdf` at paper width (5.9 in) and
@@ -65,7 +65,7 @@ non-zero on any overlap, so it can gate a commit. Direct labelling fails
 silently, which is why the check exists; the check replaces eyeballing the
 rendered figures. The library itself has no document-format dependence, so
 plain scripts check their own figures inline with
-`assert not ts.collisions(fig)`.
+`assert not ps.collisions(fig)`.
 
 ## Tests
 
