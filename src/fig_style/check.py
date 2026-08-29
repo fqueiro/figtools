@@ -82,7 +82,15 @@ def check(doc, figs=None):
             warnings.simplefilter('ignore')
             # Running the document's own code is the point: the figures only
             # exist once it has run. Same trust as rendering the document.
-            exec(compile(body, f'{doc.name}:chunk{i}', 'exec'), ns)  # noqa: S102
+            try:
+                exec(compile(body, f'{doc.name}:chunk{i}', 'exec'), ns)  # noqa: S102
+            except AssertionError:
+                # The inline `assert not collisions(fig)` idiom: the document
+                # measured its own figure and found overlaps. Report it and
+                # measure the open figure below for the specifics, rather
+                # than letting one collision abort the whole batch. Any
+                # other exception is a broken document and still raises.
+                found.append(f'  chunk {i}  a collision assert failed')
         for num in plt.get_fignums():
             fig = plt.figure(num)
             if not fig.axes:

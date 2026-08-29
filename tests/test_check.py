@@ -31,6 +31,15 @@ def test_check_runs_a_qmd_and_honours_its_figure_size(tmp_path):
     assert found == []
 
 
+def test_check_reports_a_failed_inline_assert_instead_of_dying(tmp_path):
+    doc = tmp_path / 'doc.qmd'
+    doc.write_text(QMD.replace('ts.label_lines(ax)',
+                               'ts.label_lines(ax)\nassert False'),
+                   encoding='utf-8')
+    n, found = fc.check(doc)
+    assert any('assert' in line for line in found)
+
+
 def test_check_runs_an_ipynb_and_skips_magics(tmp_path):
     nb = {'cells': [
         {'cell_type': 'markdown', 'source': ['# not code\n']},
