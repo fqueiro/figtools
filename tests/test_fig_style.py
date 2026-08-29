@@ -231,6 +231,20 @@ def test_key_moves_to_a_corner_the_data_leaves_free():
     plt.close(fig)
 
 
+def test_key_entries_clear_each_other_in_a_small_panel():
+    """The grid-of-small-multiples case: the step must come from measured
+    text, or big type in a little panel overprints the stack."""
+    ts.setup()
+    fig, ax = plt.subplots(figsize=(2.0, 1.6))
+    x = np.linspace(0, 1, 30)
+    ax.plot(x, 0.05 + 0.02 * x, color=ts.PALETTE[0], label='a')
+    ts.key(ax, [('leaders', ts.PALETTE[0]), ('envelope', ts.PALETTE[0]),
+                ('EU', ts.GREY['rule']), ('Portugal', ts.PALETTE[1])])
+    plt.tight_layout()
+    assert ts.collisions(fig) == []
+    plt.close(fig)
+
+
 def test_dotplot_sorts_values_and_carries_labels_and_colours_along():
     ts.setup()
     fig, ax = plt.subplots()

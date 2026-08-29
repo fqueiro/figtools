@@ -682,6 +682,11 @@ def _place_key(renderer, ax, anns, entries, lineheight, order, fixed):
     """Put a key block in the first corner the data leaves free."""
     inv = ax.transAxes.inverted()
     boxes = [_box(a, renderer, inv) for a in anns]
+    if lineheight is None:
+        # The step that clears is the entries' own measured height. A fixed
+        # fraction of the panel overlaps as soon as the panel is small or
+        # the type is big; measuring tracks both.
+        lineheight = 1.15 * max(b.height for b in boxes)
     w = max(b.width for b in boxes)
     h = lineheight * (len(anns) - 1) + max(b.height for b in boxes)
     curves = [_curve(ax, ln) for ln in _data_lines(ax)]
@@ -709,7 +714,7 @@ def _place_key(renderer, ax, anns, entries, lineheight, order, fixed):
     return moved
 
 
-def key(ax, entries, loc='auto', fontsize=None, lineheight=0.075):
+def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     """Stack coloured labels in a corner, with no box and no swatches.
 
     The fallback where labels cannot sit at the line ends: in a grid of small
@@ -718,13 +723,18 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=0.075):
     colour of the word is the key, so there is nothing to look up.
 
     `entries` is a sequence of (text, colour) pairs. `loc` names a corner, or
-    'auto' to use the first corner the data leaves free.
+    'auto' to use the first corner the data leaves free. The line step is
+    measured from the drawn entries, so it tracks the font and panel size;
+    `lineheight` (axes fraction per entry) overrides it.
     """
     fontsize = _text_size() if fontsize is None else fontsize
     auto = loc == 'auto'
     order = _CORNERS if auto else [loc]
     fixed = list(ax.texts)
-    ha, va, x0, y0, step = _corner(order[0], 0, 0, lineheight, len(entries))
+    # Provisional step for the pre-draw positions; the deferred placement
+    # re-derives it from the measured text on every draw.
+    ha, va, x0, y0, step = _corner(order[0], 0, 0, lineheight or 0.075,
+                                   len(entries))
     anns = [ax.annotate(text, xy=(x0, y0 + i * step), xycoords='axes fraction',
                         xytext=(0, 0), textcoords='offset points',
                         color=color, fontsize=fontsize, ha=ha, va=va)
