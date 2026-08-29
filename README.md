@@ -1,11 +1,12 @@
 # fig-style
 
 Matplotlib figure style for research documents, following Kieran Healy's
-*Data Visualization* practices: Okabe-Ito palette in fixed order, direct
+*Data Visualization* practices: Tol vibrant palette in fixed order, direct
 labels instead of legends (with collision-avoiding placement and hairline
-leaders), gridlines only on the measured axis, no frame, annotated reference
-lines and bands, Cleveland dot plots over bars, and a measurable check that
-no label sits on a line, a marker, or another label.
+leaders), gridlines only on the measured axis, no frame at all (no spines,
+no tick marks), annotated reference lines and bands, Cleveland dot plots
+over bars, and a measurable check that no label sits on a line, a marker,
+or another label.
 
 ## Install
 

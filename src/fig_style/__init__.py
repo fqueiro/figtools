@@ -9,15 +9,18 @@ keeps direct labelling honest.
 
 The choices follow Kieran Healy's *Data Visualization* practices:
 
-  * One colour-blind-safe categorical palette (Okabe-Ito), assigned in a fixed
-    order and never cycled, so a colour means the same entity series-wide.
+  * One colour-blind-safe categorical palette (Tol vibrant), assigned in a
+    fixed order and never cycled, so a colour means the same entity
+    series-wide.
   * Direct labelling in place of legends. A legend forces a reader to hold a
     colour in memory and hop between the key and the line; a label at the end
     of the line does not. `label_lines`, `label_points` and `label_last` do
     this, and `key` is the fallback for the figure that cannot.
   * Gridlines only on the axis carrying the measurement, drawn light and
     behind the data, so they support reading values without competing.
-  * No frame around the data. Top and right spines carry no information.
+  * No frame around the data at all: no spines, no tick marks. The grid and
+    the floating tick labels carry every reference the reader needs; axis
+    lines are frame ink.
   * Reference lines and shaded bands annotated in place ("parity", "fragile
     data") rather than left for the reader to infer.
   * Two type sizes derived from one base (`setup(base=...)`): titles and
@@ -85,11 +88,14 @@ __all__ = [
 # colour, so colour always means "this is a data series".
 GREY = {'rule': '0.45', 'grid': '0.88', 'text': '0.35', 'shade': '0.93'}
 
-# Fixed categorical colour order (Okabe-Ito subset, CVD-validated), assigned
-# to entities in fixed order, never cycled; at most four series per chart.
-# Projects define their own semantic maps (which entity gets which colour)
-# on top of these; the package owns only the colours and the fixed order.
-PALETTE = ['#0072B2', '#D55E00', '#009E73', '#E69F00']
+# Fixed categorical colour order (Paul Tol's vibrant scheme, CVD-safe),
+# assigned to entities in fixed order, never cycled; at most four series per
+# chart. Blue-then-red keeps the temperament of the published AER figures
+# this style descends from while staying colour-blind safe; Tol's grey is
+# excluded because grey is the furniture channel here. Projects define their
+# own semantic maps (which entity gets which colour) on top of these; the
+# package owns only the colours and the fixed order.
+PALETTE = ['#0077BB', '#CC3311', '#009988', '#EE7733']
 
 # ggplot's theme base size. Titles and axis labels sit at the base and every
 # other piece of text half a point below (see setup); matplotlib's own 10pt
@@ -108,11 +114,12 @@ def _text_size():
                            f'(tick label size is {size!r})') from None
 
 
-# The rest of Okabe-Ito, for the occasional figure with more series than the
-# four-colour working palette holds. Past four categories colour stops doing
-# the identifying on its own and the direct labels carry it, so these are a
-# way to keep the lines distinguishable, not a way to name more entities.
-PALETTE_LONG = [*PALETTE, '#56B4E9', '#CC79A7', '#000000']
+# The rest of Tol vibrant (cyan, magenta) plus black, for the occasional
+# figure with more series than the four-colour working palette holds. Past
+# four categories colour stops doing the identifying on its own and the
+# direct labels carry it, so these are a way to keep the lines
+# distinguishable, not a way to name more entities.
+PALETTE_LONG = [*PALETTE, '#33BBEE', '#EE3377', '#000000']
 
 
 def setup(base=BASE_SIZE):
@@ -146,10 +153,14 @@ def setup(base=BASE_SIZE):
         'axes.titlelocation': 'left',
         'axes.titlepad': 6.0,
 
-        # Frame. Only the two spines the reader measures against survive, in
-        # grey so they recede behind the data.
+        # Frame. None: the grid and the floating tick labels carry every
+        # reference the reader needs, so spines are frame ink (the look of
+        # the published AER figures this style descends from). The edge
+        # colour stays set for the figure that turns a spine back on.
         'axes.spines.top': False,
         'axes.spines.right': False,
+        'axes.spines.left': False,
+        'axes.spines.bottom': False,
         'axes.edgecolor': GREY['rule'],
         'axes.linewidth': 0.8,
         'axes.labelcolor': 'black',
@@ -164,13 +175,15 @@ def setup(base=BASE_SIZE):
         'grid.linewidth': 0.6,
         'grid.alpha': 1.0,
 
-        # Ticks. Short, grey, no minor ticks competing with the grid.
+        # Ticks. No marks, only labels: with no spine to hang from, marks
+        # would float. Colour stays set for the figure that turns them
+        # back on.
         'xtick.color': GREY['rule'],
         'ytick.color': GREY['rule'],
         'xtick.labelcolor': 'black',
         'ytick.labelcolor': 'black',
-        'xtick.major.size': 3.0,
-        'ytick.major.size': 3.0,
+        'xtick.major.size': 0.0,
+        'ytick.major.size': 0.0,
         'xtick.major.width': 0.8,
         'ytick.major.width': 0.8,
 
