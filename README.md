@@ -58,9 +58,13 @@ uv run fig-check code                     # every .qmd in code/
 uv run fig-check code adoption_lifecycle  # one document
 ```
 
-Runs each document's python chunks the way Quarto does and measures every
-figure with `collisions`; exits non-zero on any overlap, so it can gate a
-commit. Direct labelling fails silently, which is why the check exists.
+Runs each document's code the way its renderer would (`.qmd` python chunks,
+`.ipynb` code cells) and measures every figure with `collisions`; exits
+non-zero on any overlap, so it can gate a commit. Direct labelling fails
+silently, which is why the check exists; the check replaces eyeballing the
+rendered figures. The library itself has no document-format dependence, so
+plain scripts check their own figures inline with
+`assert not ts.collisions(fig)`.
 
 ## Tests
 

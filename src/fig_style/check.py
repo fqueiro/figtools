@@ -2,20 +2,23 @@
 
 Direct labelling fails silently: a label landing on a line, on a marker, or on
 another label still renders and still raises nothing, so it survives until
-somebody looks at the picture. This runs a document's python chunks the way
-Quarto does and measures each figure it produces with `fig_style.collisions`,
-which is quicker than rendering and reading, and does not depend on noticing.
+somebody looks at the picture. This runs a document's code the way its
+renderer would (the python chunks of a .qmd, the code cells of a .ipynb) and
+measures each figure it produces with `fig_style.collisions`, which is quicker
+than rendering and reading, and does not depend on noticing.
 
     uv run fig-check code
     uv run fig-check code adoption_lifecycle
 
-With no document names it checks every .qmd in the directory. Exits non-zero
-if anything overlaps, so it can gate a commit. `--figs DIR` writes each figure
-to DIR as a png, which is how to see what a reported overlap looks like.
+With no document names it checks every .qmd and .ipynb in the directory.
+Exits non-zero if anything overlaps, so it can gate a commit. `--figs DIR`
+writes each figure to DIR as a png, which is how to see what a reported
+overlap looks like.
 """
 
 import argparse
 import io
+import json
 import re
 import sys
 import warnings
@@ -40,6 +43,17 @@ def chunks(text):
                         if not ln.lstrip().startswith('#|'))
 
 
+def cells(text):
+    """The code cells of a .ipynb, in order, without magic and shell lines."""
+    for cell in json.loads(text).get('cells', []):
+        if cell.get('cell_type') != 'code':
+            continue
+        src = cell.get('source', [])
+        body = ''.join(src) if isinstance(src, list) else src
+        yield '\n'.join(ln for ln in body.splitlines()
+                        if not ln.lstrip().startswith(('%', '!')))
+
+
 def figsize(text):
     """The document's own figure size, so the check sees what Quarto renders.
 
@@ -51,20 +65,24 @@ def figsize(text):
     return float(got.get('width', 6.4)), float(got.get('height', 4.8))
 
 
-def check(qmd, figs=None):
+def check(doc, figs=None):
     """Run one document and return its overlaps as printable lines."""
-    text = qmd.read_text(encoding='utf-8')
-    plt.rcParams['figure.figsize'] = figsize(text)
-    # Quarto's kernel supplies these; chunks assume them without importing.
+    text = doc.read_text(encoding='utf-8')
+    is_qmd = doc.suffix == '.qmd'
+    # A notebook carries no fig-width header; matplotlib's default size is
+    # what its renderer shows.
+    plt.rcParams['figure.figsize'] = figsize(text) if is_qmd else (6.4, 4.8)
+    # The document's kernel supplies these; cells assume them without
+    # importing.
     ns = {'__name__': '__main__', 'display': lambda *a, **k: None,
           'get_ipython': lambda: None}
     found, n = [], 0
-    for i, body in enumerate(chunks(text)):
+    for i, body in enumerate(chunks(text) if is_qmd else cells(text)):
         with warnings.catch_warnings(), redirect_stdout(io.StringIO()):
             warnings.simplefilter('ignore')
             # Running the document's own code is the point: the figures only
             # exist once it has run. Same trust as rendering the document.
-            exec(compile(body, f'{qmd.name}:chunk{i}', 'exec'), ns)  # noqa: S102
+            exec(compile(body, f'{doc.name}:chunk{i}', 'exec'), ns)  # noqa: S102
         for num in plt.get_fignums():
             fig = plt.figure(num)
             if not fig.axes:
@@ -75,7 +93,7 @@ def check(qmd, figs=None):
                 warnings.simplefilter('ignore')
                 hits = collisions(fig)
                 if figs is not None:
-                    fig.savefig(figs / f'{qmd.stem}_{n}.png', dpi=110)
+                    fig.savefig(figs / f'{doc.stem}_{n}.png', dpi=110)
             found += [f'  fig {n} panel {p}  {kind:12} {what}'
                       for p, kind, what in hits]
             plt.close(fig)
@@ -84,7 +102,8 @@ def check(qmd, figs=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('docs', type=Path, help='directory holding the .qmd files')
+    ap.add_argument('docs', type=Path,
+                    help='directory holding the documents (.qmd, .ipynb)')
     ap.add_argument('names', nargs='*', help='document stems; default all')
     ap.add_argument('--figs', type=Path, help='also write each figure here')
     a = ap.parse_args(argv)
@@ -97,12 +116,12 @@ def main(argv=None):
     if a.figs:
         a.figs.mkdir(parents=True, exist_ok=True)
     total = 0
-    for qmd in sorted(docs.glob('*.qmd')):
-        if a.names and qmd.stem not in a.names:
+    for doc in sorted([*docs.glob('*.qmd'), *docs.glob('*.ipynb')]):
+        if a.names and doc.stem not in a.names:
             continue
-        n, found = check(qmd, a.figs)
+        n, found = check(doc, a.figs)
         total += len(found)
-        print(f'{qmd.name:28} {n:2} figures  '
+        print(f'{doc.name:28} {n:2} figures  '
               f'{f"{len(found)} overlap(s)" if found else "clean"}')
         for line in found:
             print(line)
