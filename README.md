@@ -30,11 +30,11 @@ ax.plot(years, north, label='North')
 ps.band(ax, years, lo, hi)      # CI ribbon, inherits the line's colour
 ps.refline(ax, 1, 'parity')
 ps.label_lines(ax)              # direct labels replace the legend
-ps.save(fig, '../results/figures/relative_tfp')
+ps.save(fig, '../results/figures/fig1')
 ```
 
-`save` writes `relative_tfp.pdf` at paper width (5.9 in) and
-`relative_tfp_slides.pdf` at slide width (4.1 in), re-solving label placement
+`save` writes `fig1.pdf` at paper width (5.9 in) and
+`fig1_slides.pdf` at slide width (4.1 in), re-solving label placement
 at each size and refusing to write a variant whose labels collide. Include
 the PDFs in LaTeX at natural size, with no `width=` option: the figure was
 rendered at the physical size of its destination, so its type lands on the
@@ -61,8 +61,7 @@ uv run fig-check code adoption_lifecycle  # one document
 
 Runs each document's code the way its renderer would (`.qmd` python chunks,
 `.ipynb` code cells) and measures every figure with `collisions`; exits
-non-zero on any overlap, so it can gate a commit. Direct labelling fails
-silently, which is why the check exists; the check replaces eyeballing the
+non-zero on any overlap; the check replaces eyeballing the
 rendered figures. The library itself has no document-format dependence, so
 plain scripts check their own figures inline with
 `assert not ps.collisions(fig)`.
