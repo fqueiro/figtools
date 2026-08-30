@@ -105,6 +105,85 @@ def test_label_lines_keeps_ticks_off_the_label_margin():
     plt.close(fig)
 
 
+def test_label_lines_keeps_margin_labels_in_the_order_of_the_line_ends():
+    """The ladder is the pairing: the label whose line ends higher must sit
+    higher, or the reader pairs every label with the wrong line. This is the
+    doc-12 four-panel figure reduced to its geometry (series ending in tight
+    clusters, small type, one shared x-axis), which used to come out with
+    swapped labels: a label brushing the tail of a neighbouring line was
+    kicked into the dodge search, and the search could settle on the far
+    side of a neighbour."""
+    ps.setup(base=9)
+    fig, axes = plt.subplots(2, 2, figsize=(9, 7), sharex=True, sharey=True)
+    x = np.arange(1995, 2022)
+    t = (x - x[0]) / (x[-1] - x[0])
+    panels = [
+        {'FI': 131, 'SE': 90, 'DK': 194, 'DE': 86, 'FR': 111, 'PT': 88},
+        {'FI': 372, 'SE': 286, 'DK': 500, 'DE': 207, 'FR': 189, 'PT': 86},
+        {'FI': 110, 'SE': 214, 'DK': 154, 'DE': 153, 'FR': 120, 'PT': 80},
+        {'FI': 183, 'DK': 181, 'DE': 220, 'FR': 189, 'PT': 114},
+    ]
+    for ax, ends in zip(axes.flat, panels):
+        for name, e in ends.items():
+            ax.plot(x, 100 * (e / 100) ** t, label=name)
+        ax.set_yscale('log')
+        ax.set_ylim(40, 520)
+        ps.refline(ax, 100, axis='y', ls='-', lw=0.8)
+        ps.label_lines(ax)
+    plt.tight_layout()
+    fig.canvas.draw()
+    for ax, ends in zip(axes.flat, panels):
+        anns = [a for a in ax.texts if a.get_text() in ends]
+        by_label = [a.get_text() for a in
+                    sorted(anns, key=lambda a: -a.get_position()[1])]
+        by_end = sorted(ends, key=lambda n: -ends[n])
+        assert by_label == by_end
+    plt.close(fig)
+    ps.setup()
+
+
+def test_label_lines_widens_a_shared_axis_once():
+    """Four sharex panels used to widen the axis by 1.22 four times over,
+    squeezing the data into half of each panel."""
+    ps.setup()
+    fig, axes = plt.subplots(2, 2, sharex=True, sharey=True)
+    x = np.arange(2000, 2021)
+    for ax in axes.flat:
+        ax.plot(x, np.linspace(1, 2, len(x)), label='a')
+        ax.plot(x, np.linspace(1, 1.5, len(x)), label='b')
+    axes.flat[0].set_xlim(2000, 2020)
+    for ax in axes.flat:
+        ps.label_lines(ax)
+    assert axes.flat[0].get_xlim()[1] == pytest.approx(2020 + 0.22 * 20)
+    plt.close(fig)
+
+
+def test_label_lines_rejects_a_series_whose_end_the_limits_clip():
+    """A clipped line cannot be labelled at its end: the anchor is off the
+    panel, and the figure's limits are what need fixing."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(2000, 2021)
+    ax.plot(x, np.linspace(100, 600, len(x)), label='runs off the top')
+    ax.plot(x, np.linspace(100, 200, len(x)), label='stays inside')
+    ax.set_ylim(40, 520)
+    with pytest.raises(ValueError, match='outside the axes limits'):
+        ps.label_lines(ax)
+    plt.close(fig)
+
+
+def test_make_room_does_not_compound_with_label_lines():
+    ps.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(2000, 2021)
+    ax.plot(x, np.linspace(1, 2, len(x)), label='a')
+    ax.set_xlim(2000, 2020)
+    ps.make_room(ax)
+    ps.label_lines(ax)
+    assert ax.get_xlim()[1] == pytest.approx(2020 + 0.22 * 20)
+    plt.close(fig)
+
+
 def test_label_lines_rejects_an_axes_with_nothing_labelled():
     ps.setup()
     fig, ax = plt.subplots()

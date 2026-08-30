@@ -184,6 +184,8 @@ def setup(base=BASE_SIZE):
         'ytick.labelcolor': 'black',
         'xtick.major.size': 0.0,
         'ytick.major.size': 0.0,
+        'xtick.minor.size': 0.0,
+        'ytick.minor.size': 0.0,
         'xtick.major.width': 0.8,
         'ytick.major.width': 0.8,
 
@@ -426,8 +428,33 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
 
     final = list(want)
     # Margin labels first: they are already spread, so they settle at their
-    # own height and become obstacles for the free-floating ones.
-    for i in at_edge + [i for i in range(len(anns)) if i not in at_edge]:
+    # own height and become obstacles for the free-floating ones. They go
+    # bottom-to-top, each barred from dipping below the top of the one just
+    # placed, because the ladder's vertical order is the pairing with the
+    # line ends: a free dodge could clear an obstacle by leaping over a
+    # neighbour, leaving every label readable but the ladder ordered unlike
+    # the lines. When nothing above the floor is clear, the label settles at
+    # the floor and any remaining overlap is left for `collisions` to
+    # report, which fails loudly where a swapped ladder would not.
+    floor = -np.inf
+    for i in sorted(at_edge, key=lambda i: want[i]):
+        step = max(heights[i] * 1.05, 0.028)
+        offsets = [0.0] + [s * k * step for k in range(1, 13) for s in (1, -1)]
+        near = obstacles(i)
+        lo = max(floor, 0.005)
+        final[i] = max(want[i], lo + heights[i] / 2)
+        for dy in offsets:
+            y = want[i] + dy
+            if y - heights[i] / 2 < lo or y + heights[i] / 2 > 0.995:
+                continue
+            if not _hits(rect(i, y), blocked, near):
+                final[i] = y
+                break
+        blocked.append(rect(i, final[i]))
+        floor = final[i] + heights[i] / 2 + 0.006
+    for i in range(len(anns)):
+        if i in at_edge:
+            continue
         step = max(heights[i] * 1.05, 0.028)
         offsets = [0.0] + [s * k * step for k in range(1, 13) for s in (1, -1)]
         near = obstacles(i)
@@ -497,15 +524,45 @@ def _renderer(fig):
         return None
 
 
+def _widen(ax, axis, room):
+    """Extend one axis limit by `room` to make label space, exactly once.
+
+    The pre-widening limits are remembered on every axes sharing this axis,
+    so the next call (the next panel of a sharex grid, or a `make_room`
+    before `label_lines`) measures the same data span instead of compounding
+    room on room: four shared panels would otherwise end 1.22^4 wide, the
+    data squeezed into half of each. Returns the data limits the room was
+    measured from; ticks stay inside them.
+    """
+    shared = (ax.get_shared_x_axes() if axis == 'x'
+              else ax.get_shared_y_axes()).get_siblings(ax)
+    attr = f'_fs_base_{axis}lim'
+    base = next((getattr(a, attr) for a in shared if hasattr(a, attr)), None)
+    if base is None:
+        base = ax.get_xlim() if axis == 'x' else ax.get_ylim()
+        for a in shared:
+            setattr(a, attr, base)
+    lo, hi = base
+    setl = ax.set_xlim if axis == 'x' else ax.set_ylim
+    setl(lo, hi + room * (hi - lo))
+    _trim_ticks(ax, axis, lo, hi)
+    return lo, hi
+
+
 def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
     """Label each data line at its right-hand end, in the line's own colour.
 
     Replaces `ax.legend()`. Extends the x-limit by `room` (a fraction of the
-    current x-range) to make space, then places one coloured label per line at
-    its final finite value. Labels are spread apart by their own measured
-    height and moved clear of anything they would otherwise sit on: another
-    label, a reference-line or shaded-band annotation, or a plotted line. A
-    label moved off its own line gets a hairline leader back to it.
+    data x-range, applied once even on shared axes) to make space, then
+    places one coloured label per line at its final finite value. Labels are
+    spread apart by their own measured height and moved clear of anything
+    they would otherwise sit on: another label, a reference-line or
+    shaded-band annotation, or a plotted line. The margin labels always read
+    top-to-bottom in the order the lines end, so the ladder itself carries
+    the pairing; a label moved off its own line gets a hairline leader back
+    to it. A series whose end the axes limits clip off is an error: its
+    anchor sits outside the panel, and the figure's limits are what need
+    fixing.
 
     `gap` sets a minimum separation (axes fraction) over the measured one, for
     the occasional figure that wants the labels further apart than they
@@ -520,11 +577,10 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
         raise ValueError(f'label_lines: {len(texts)} texts for '
                          f'{len(lines)} lines')
 
-    x0, x1 = ax.get_xlim()
-    ax.set_xlim(x0, x1 + room * (x1 - x0))
-    # The added margin is label space, not data space: keep ticks off it so
-    # the axis does not advertise a range the data never reaches.
-    _trim_ticks(ax, 'x', x0, x1)
+    # The added margin is label space, not data space: ticks stay off it so
+    # the axis does not advertise a range the data never reaches, and on
+    # shared axes the widening applies once rather than once per panel.
+    x0, x1 = _widen(ax, 'x', room)
 
     ends = []
     for ln in lines:
@@ -534,6 +590,19 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
             raise ValueError(f'label_lines: series {ln.get_label()!r} is empty')
         j = np.flatnonzero(ok)[-1]
         ends.append((xd[j], yd[j]))
+
+    # A line whose end the limits clip off cannot be labelled at its end:
+    # the anchor sits outside the panel and the label would name a line that
+    # visibly stops somewhere else. That is a limits problem in the calling
+    # figure, raised as one rather than papered over.
+    xlo, xhi = sorted((x0, x1))
+    ylo, yhi = sorted(ax.get_ylim())
+    for ln, (xe, ye) in zip(lines, ends):
+        if not (xlo <= xe <= xhi and ylo <= ye <= yhi):
+            raise ValueError(
+                f'label_lines: series {ln.get_label()!r} ends at '
+                f'({xe:g}, {ye:g}), outside the axes limits; widen the '
+                'limits or drop the series')
 
     # Anything already annotated on this axes is furniture the labels have to
     # avoid, so capture it before adding any of our own.
@@ -779,12 +848,11 @@ def make_room(ax, room=0.22, axis='x'):
     """Widen an axis limit to leave space for direct labels beyond the data.
 
     `label_lines` does this itself; call it explicitly when placing labels
-    with `label_last`. Ticks stay inside the original data range.
+    with `label_last`. Ticks stay inside the original data range, and on
+    shared axes (or after an earlier call) the widening applies once rather
+    than compounding.
     """
-    get, setl = (ax.get_xlim, ax.set_xlim) if axis == 'x' else (ax.get_ylim, ax.set_ylim)
-    lo, hi = get()
-    setl(lo, hi + room * (hi - lo))
-    _trim_ticks(ax, axis, lo, hi)
+    _widen(ax, axis, room)
 
 
 def label_last(ax, x, y, text, color, dx=4, dy=0, fontsize=None, **kw):
