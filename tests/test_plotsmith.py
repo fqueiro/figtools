@@ -58,6 +58,18 @@ def test_spread_separates_coincident_labels():
     assert all(b - a >= 0.075 - 1e-9 for a, b in pairwise(out))
 
 
+def test_spread_leaves_a_label_with_clear_space_on_its_anchor():
+    """Spreading a crowded cluster must not drag distant labels along: the
+    old push-then-re-centre shifted the whole block, moving labels whose own
+    space was never contested (doc 12: Denmark's label pulled off its line
+    because four other series ended in a cluster far below it)."""
+    ys = [0.62, 0.47, 0.40, 0.32, 0.31, 0.30]
+    out = _spread(ys, 0.052, lo=LO, hi=HI)
+    assert out[0] == pytest.approx(0.62)   # isolated at the top: untouched
+    assert out[1] == pytest.approx(0.47)   # clear of the cluster: untouched
+    assert all(b - a >= 0.052 - 1e-9 for a, b in pairwise(sorted(out)))
+
+
 def _labels(ax):
     return {t.get_text() for t in ax.texts}
 
@@ -140,6 +152,27 @@ def test_label_lines_keeps_margin_labels_in_the_order_of_the_line_ends():
         assert by_label == by_end
     plt.close(fig)
     ps.setup()
+
+
+def test_label_lines_puts_a_clear_label_on_its_line_with_no_leader():
+    """A series with empty space around its end gets its label right at the
+    line, leaderless, even when other series in the panel end in a cluster
+    that has to be spread apart."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(2000, 2021)
+    t = (x - x[0]) / (x[-1] - x[0])
+    for name, e in [('top', 0.90), ('a', 0.50), ('b', 0.48), ('c', 0.46)]:
+        ax.plot(x, 0.5 + (e - 0.5) * t, label=name)
+    ax.set_xlim(2000, 2020)
+    ax.set_ylim(0, 1)
+    ps.label_lines(ax)
+    plt.tight_layout()
+    fig.canvas.draw()
+    top = next(t for t in ax.texts if t.get_text() == 'top')
+    assert top.get_position()[1] == pytest.approx(0.90, abs=1e-6)
+    assert not top.arrow_patch.get_visible()
+    plt.close(fig)
 
 
 def test_label_lines_widens_a_shared_axis_once():

@@ -248,12 +248,17 @@ def guide(ax, x, y, lw=1.0, **kw):
 
 
 def _spread(ys, gap, lo=0.0, hi=1.0):
-    """Nudge positions apart so labels stacked at one height clear each other.
+    """Separate labels stacked too close, moving each as little as possible.
 
-    Preserves the vertical order of the series, so a label never crosses the
-    line above or below it, and keeps the whole block inside [lo, hi]: series
-    that all finish at nearly the same level would otherwise be pushed off
-    the panel by the re-centring.
+    Returns positions in the input order that keep the vertical order of the
+    series, sit at least `gap` apart, and stay inside [lo, hi]. A label with
+    clear space around it does not move at all: the crowded runs are found
+    by pooling adjacent violators (isotonic regression on the slack
+    y - k*gap), and each run spreads centred on its own members. The
+    alternative, pushing collisions apart and re-centring the whole block,
+    dragged every label in the margin off its line whenever a cluster
+    anywhere in the panel needed spreading, sprouting leaders on labels
+    whose own space was never contested.
     """
     ys = list(ys)
     if len(ys) == 1:
@@ -261,20 +266,29 @@ def _spread(ys, gap, lo=0.0, hi=1.0):
     order = sorted(range(len(ys)), key=lambda i: ys[i])
     # Fall back to an even split when the labels cannot all fit at `gap`.
     gap = min(gap, (hi - lo) / (len(ys) - 1))
-    out = list(ys)
-    for k, i in enumerate(order[1:], start=1):
-        below = out[order[k - 1]]
-        if out[i] - below < gap:
-            out[i] = below + gap
-    # Re-centre on the original positions, then slide the block back inside
-    # the panel if that pushed either end out.
-    shift = np.mean(ys) - np.mean(out)
-    bottom, top = out[order[0]] + shift, out[order[-1]] + shift
-    if bottom < lo:
-        shift += lo - bottom
-    elif top > hi:
-        shift -= top - hi
-    return [y + shift for y in out]
+    z = [ys[i] - k * gap for k, i in enumerate(order)]
+    blocks = []   # [sum, count] per run, fitted means kept increasing
+    for v in z:
+        blocks.append([v, 1])
+        while (len(blocks) > 1 and blocks[-2][0] / blocks[-2][1]
+               >= blocks[-1][0] / blocks[-1][1]):
+            s, n = blocks.pop()
+            blocks[-1][0] += s
+            blocks[-1][1] += n
+    fit = [s / n for s, n in blocks for _ in range(n)]
+    out = [f + k * gap for k, f in enumerate(fit)]
+    # Slide back inside the panel from each end; the gap cap above means the
+    # ladder fits, so neither pass can undo the other.
+    out[0] = max(out[0], lo)
+    for k in range(1, len(out)):
+        out[k] = max(out[k], out[k - 1] + gap)
+    out[-1] = min(out[-1], hi)
+    for k in range(len(out) - 2, -1, -1):
+        out[k] = min(out[k], out[k + 1] - gap)
+    res = list(ys)
+    for k, i in enumerate(order):
+        res[i] = out[k]
+    return res
 
 
 def _to_axes(ax, pts):
