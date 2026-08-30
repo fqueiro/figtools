@@ -373,6 +373,60 @@ def test_key_moves_to_a_corner_the_data_leaves_free():
     plt.close(fig)
 
 
+def test_key_avoids_strokes_drawn_as_collections():
+    """Dumbbell connectors and dot-plot stems are LineCollections, which the
+    corner search used to be blind to: a key could park right on them."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    # A data line through the upper left, dumbbell strokes filling the
+    # upper right: the first genuinely free corner is the lower right.
+    ax.plot([0.0, 0.3], [0.97, 0.85], color=ps.PALETTE[0], label='a')
+    ax.hlines([0.85, 0.9, 0.95], 0.6, 1.0, color=ps.GREY['grid'])
+    anns = ps.key(ax, [('Portugal', ps.PALETTE[0]),
+                       ('North mean', ps.PALETTE[1])])
+    plt.tight_layout()
+    fig.canvas.draw()
+    assert (anns[0].get_ha(), anns[0].get_va()) == ('right', 'bottom')
+    plt.close(fig)
+
+
+def test_key_avoids_reference_rules():
+    """A short direct label may sit across a reference rule; a key block
+    parked across one reads as clutter, so the corner search treats rules
+    as obstacles."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    # Data through the upper left; a vertical rule near the right edge
+    # crosses both right-hand corners: only the lower left is clear.
+    ax.plot([0.0, 0.3], [0.95, 0.80], color=ps.PALETTE[0], label='a')
+    ps.refline(ax, 0.85, axis='x')
+    anns = ps.key(ax, [('own deflators', ps.PALETTE[0]),
+                       ('harmonized', ps.PALETTE[1])])
+    plt.tight_layout()
+    fig.canvas.draw()
+    assert (anns[0].get_ha(), anns[0].get_va()) == ('left', 'bottom')
+    plt.close(fig)
+
+
+def test_collisions_sees_collection_strokes():
+    """hlines/vlines strokes are data ink: a label sitting on one must be
+    reported, or the save-time check waves through dumbbell overlaps."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.hlines([0.5], 0.0, 1.0)
+    ax.annotate('on the stem', xy=(0.5, 0.5), xycoords='data',
+                ha='center', va='center')
+    hits = ps.collisions(fig)
+    assert any(kind == 'label/line' for _, kind, _ in hits)
+    plt.close(fig)
+
+
 def test_key_entries_clear_each_other_in_a_small_panel():
     """The grid-of-small-multiples case: the step must come from measured
     text, or big type in a little panel overprints the stack."""

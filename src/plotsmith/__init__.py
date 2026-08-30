@@ -323,6 +323,11 @@ def _curve(ax, line, step=0.004):
     # away from space that is in fact empty.
     if line.get_linestyle() in ('None', ' ', '') or not line.get_linewidth():
         return pts
+    return _densify(pts, step)
+
+
+def _densify(pts, step=0.004):
+    """Resample a polyline (axes fraction) finely enough to test against."""
     if len(pts) < 2:
         return pts
     out = [pts[:1]]
@@ -330,6 +335,45 @@ def _curve(ax, line, step=0.004):
         n = max(1, int(np.ceil(float(np.hypot(*(b - a))) / step)))
         out.append(a + np.linspace(0, 1, n + 1)[1:, None] * (b - a))
     return np.vstack(out)
+
+
+def _collection_curves(ax):
+    """Strokes drawn as collections, in axes fraction: dot-plot stems and
+    dumbbell connectors (`hlines`), pointrange intervals (`vlines`). They
+    are data ink like any plotted line, but they live in `ax.collections`,
+    which the Line2D-based obstacle tests do not see."""
+    out = []
+    for coll in ax.collections:
+        if not isinstance(coll, mpl.collections.LineCollection):
+            continue
+        for seg in coll.get_segments():
+            pts = _to_axes(ax, np.asarray(seg, float))
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            if len(pts) >= 2:
+                out.append(_densify(pts))
+    return out
+
+
+def _rule_curves(ax):
+    """Reference rules (`axhline`/`axvline`) as paths in axes fraction.
+
+    Rules are furniture a short direct label may sit across, so the label
+    placements ignore them; a key block parked across one reads as clutter,
+    so the key's corner search does not."""
+    inv = ax.transAxes.inverted()
+    out = []
+    for ln in ax.get_lines():
+        if ln.get_transform() is ax.transData:
+            continue
+        xy = np.column_stack([np.asarray(ln.get_xdata(), float),
+                              np.asarray(ln.get_ydata(), float)])
+        if len(xy) < 2:
+            continue
+        pts = inv.transform(ln.get_transform().transform(xy))
+        pts = pts[np.isfinite(pts).all(axis=1)]
+        if len(pts) >= 2:
+            out.append(_densify(pts))
+    return out
 
 
 def _pad_box(box, pad):
@@ -431,7 +475,7 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
     for i, f in zip(at_edge, spread):
         want[i] = f
 
-    curves = [_curve(ax, ln) for ln in _data_lines(ax)]
+    curves = [_curve(ax, ln) for ln in _data_lines(ax)] + _collection_curves(ax)
     blocked = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
                + _marker_boxes(ax))
 
@@ -802,7 +846,8 @@ def _place_key(renderer, ax, anns, entries, lineheight, order, fixed):
         lineheight = 1.15 * max(b.height for b in boxes)
     w = max(b.width for b in boxes)
     h = lineheight * (len(anns) - 1) + max(b.height for b in boxes)
-    curves = [_curve(ax, ln) for ln in _data_lines(ax)]
+    curves = ([_curve(ax, ln) for ln in _data_lines(ax)]
+              + _collection_curves(ax) + _rule_curves(ax))
     others = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
               + _marker_boxes(ax))
 
@@ -836,7 +881,10 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     colour of the word is the key, so there is nothing to look up.
 
     `entries` is a sequence of (text, colour) pairs. `loc` names a corner, or
-    'auto' to use the first corner the data leaves free. The line step is
+    'auto' (the default) to use the first corner clear of the data: plotted
+    lines, collection strokes (dot-plot stems, dumbbell connectors,
+    pointrange intervals), markers, and reference rules, which a short
+    direct label may sit across but a key block may not. The line step is
     measured from the drawn entries, so it tracks the font and panel size;
     `lineheight` (axes fraction per entry) overrides it.
     """
@@ -929,7 +977,7 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
                          f'anchor, not {ann.anncoords!r}')
     inv = ax.transAxes.inverted()
     box = _box(ann, renderer, inv)
-    curves = [_curve(ax, ln) for ln in _data_lines(ax)]
+    curves = [_curve(ax, ln) for ln in _data_lines(ax)] + _collection_curves(ax)
     others = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
               + _marker_boxes(ax))
     j = 0 if axis == 'y' else 1
@@ -1101,6 +1149,7 @@ def collisions(fig, pad=0.004):
         curves = [(ln.get_label() if not ln.get_label().startswith('_')
                    else 'unlabelled', _curve(ax, ln))
                   for ln in _data_lines(ax)]
+        curves += [('unlabelled stroke', c) for c in _collection_curves(ax)]
         for i, t in enumerate(texts):
             # A direct label is anchored to a point on its own line, so the
             # line necessarily reaches it. Only an intrusion away from that
