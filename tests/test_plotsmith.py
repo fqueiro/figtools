@@ -175,6 +175,36 @@ def test_label_lines_puts_a_clear_label_on_its_line_with_no_leader():
     plt.close(fig)
 
 
+def test_leaders_appear_only_when_a_label_is_clearly_off_its_line():
+    """A stub leader on a label still level with its line end is noise (the
+    word's colour and the ladder's order carry the pairing); a label pushed
+    well off, like the outer labels of a fan over coincident ends, earns
+    one. The old fixed 2%-of-panel threshold was well under a label height
+    and sprouted stubs all over a spread cluster."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(2000, 2021)
+    t = (x - x[0]) / (x[-1] - x[0])
+    # A tight cluster: the spread displaces each label by less than its own
+    # height, so none of the three needs a leader.
+    for name, e in [('a', 0.604), ('b', 0.592), ('c', 0.587)]:
+        ax.plot(x, 0.5 + (e - 0.5) * t, label=name)
+    # Five series ending together: the outer labels of the fan land well
+    # over 1.5 label heights from the shared end and get leaders.
+    for name in ['v', 'w', 'x', 'y', 'z']:
+        ax.plot(x, np.full(x.shape, 0.15), label=name)
+    ax.set_xlim(2000, 2020)
+    ax.set_ylim(0, 1)
+    ps.label_lines(ax)
+    plt.tight_layout()
+    fig.canvas.draw()
+    vis = {t.get_text(): t.arrow_patch.get_visible() for t in ax.texts}
+    assert not any(vis[k] for k in 'abc')
+    assert vis['v'] and vis['z']         # the fan's outer labels
+    assert not any(vis[k] for k in 'wxy')
+    plt.close(fig)
+
+
 def test_label_lines_widens_a_shared_axis_once():
     """Four sharex panels used to widen the axis by 1.22 four times over,
     squeezing the data into half of each panel."""

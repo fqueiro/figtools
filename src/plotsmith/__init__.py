@@ -420,7 +420,13 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
     # the room they need without starving single-line ones.
     tall = max(heights[i] for i in at_edge)
     inset = tall / 2 + 0.012
-    spread = _spread([want[i] for i in at_edge], max(gap or 0.0, tall * 1.15),
+    # The separation must cover what the ladder's floor below demands (a
+    # label height plus the collision pad), or the spread's own rungs trip
+    # the floor and every label bumps a full dodge step, double-spacing the
+    # ladder: 1.15*tall covers it at text sizes near the default,
+    # tall + 0.007 keeps it covered at small ones.
+    spread = _spread([want[i] for i in at_edge],
+                     max(gap or 0.0, tall * 1.15, tall + 0.007),
                      lo=inset, hi=1 - inset)
     for i, f in zip(at_edge, spread):
         want[i] = f
@@ -487,9 +493,15 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
             moved = True
         ann.set_position((ann.get_position()[0],
                           float(_to_data(ax, [(pos[i][0], final[i])])[0][1])))
-        # A leader is clutter on a label already sitting on its line, and the
-        # only thing making the pairing readable once one has been moved off.
-        ann.arrow_patch.set_visible(abs(final[i] - anchors[i][1]) > 0.02)
+        # A leader earns its ink only once the label sits clearly away from
+        # its line end, beyond 1.5 of its own height: closer than that, the
+        # word's colour and the ladder's order already carry the pairing.
+        # The old fixed 2%-of-panel threshold was well under a label height,
+        # sprouting stubs on labels still level with their lines.
+        show = abs(final[i] - anchors[i][1]) > 1.5 * heights[i]
+        if show != ann.arrow_patch.get_visible():
+            moved = True
+        ann.arrow_patch.set_visible(show)
     return moved
 
 
@@ -573,8 +585,9 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
     they would otherwise sit on: another label, a reference-line or
     shaded-band annotation, or a plotted line. The margin labels always read
     top-to-bottom in the order the lines end, so the ladder itself carries
-    the pairing; a label moved off its own line gets a hairline leader back
-    to it. A series whose end the axes limits clip off is an error: its
+    the pairing; a label moved clearly off its own line (beyond one and a
+    half times its height) gets a hairline leader back to it. A series whose
+    end the axes limits clip off is an error: its
     anchor sits outside the panel, and the figure's limits are what need
     fixing.
 
@@ -627,9 +640,13 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
 
     anns = []
     for i, (ln, (xe, ye)) in enumerate(zip(lines, ends)):
+        # relpos attaches the stroke to the label's near edge. The default
+        # aims at the centre of the text box, so a leader to a label in the
+        # margin ladder tunnelled under whatever word sat between it and its
+        # line end; edge-attached, it stays in the gutter beside the column.
         leader = {'arrowstyle': '-', 'color': ln.get_color(), 'lw': 0.6,
                   'alpha': 0.55, 'shrinkA': 0, 'shrinkB': 3,
-                  'connectionstyle': 'arc3,rad=0'}
+                  'relpos': (0, 0.5), 'connectionstyle': 'arc3,rad=0'}
         ann = ax.annotate(
             texts[i] if texts is not None else ln.get_label(),
             xy=(xe, ye),
