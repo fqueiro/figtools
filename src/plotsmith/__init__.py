@@ -45,7 +45,9 @@ bars, which spend ink on a length the reader does not need.
 Direct labelling only works if the labels can be read, so the labels place
 themselves: each is moved clear of the others, of the plotted lines and of
 the markers, with a hairline leader once it has moved far enough that the
-pairing stops being obvious. That has to happen when the figure is drawn,
+pairing stops being obvious, and a label too wide for the figure is broken
+into two or three lines so the panel keeps its width. That has to happen
+when the figure is drawn,
 because it depends on how big the panel turned out to be, so it runs from a
 draw callback and recomputes on every draw rather than being decided when the
 label is created. `collisions` measures a drawn figure for what is left; it
@@ -442,7 +444,41 @@ def _box(artist, renderer, inv):
     return mpl.text.Text.get_window_extent(artist, renderer).transformed(inv)
 
 
-def _place(renderer, ax, anns, lines, ends, fixed, gap):
+def _wrapped(renderer, ann, text, cap):
+    """`text` broken at spaces into the fewest lines (up to three) whose
+    widest line fits within `cap` pixels, cut as evenly as those lines can
+    be; `text` itself when it fits, has one word, or was broken by hand.
+
+    Among the ways to cut a given number of lines, the one whose widest line
+    is narrowest wins, ties going to the most even. A word wider than `cap`
+    cannot be brought under it: the label is then cut as narrow as three
+    lines allow and left to the author, who can shorten it.
+    """
+    words = text.split(' ')
+    if '\n' in text or '$' in text or len(words) == 1:
+        return text
+    fp = ann.get_fontproperties()
+
+    def width(s):
+        return renderer.get_text_width_height_descent(s, fp, ismath=False)[0]
+
+    if width(text) <= cap:
+        return text
+    best = None
+    for n in range(2, min(3, len(words)) + 1):
+        for cuts in combinations(range(1, len(words)), n - 1):
+            lines = [' '.join(words[a:b])
+                     for a, b in pairwise((0, *cuts, len(words)))]
+            widths = [width(s) for s in lines]
+            key = (max(widths), max(widths) - min(widths))
+            if best is None or key < best[0]:
+                best = (key, lines)
+        if best[0][0] <= cap:
+            break
+    return '\n'.join(best[1])
+
+
+def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
     """Position every direct label on `ax`; return whether anything moved.
 
     Two things have to be true of a finished label: it does not sit on another
@@ -452,6 +488,17 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap):
     the anchors each pass, which makes it idempotent and safe to re-run on any
     later draw.
     """
+    # Wrapping first, from each label's original text, because it changes
+    # the boxes everything below is measured from; it depends on the figure
+    # width, so the paper and slide renders each get their own answer.
+    rewrapped = False
+    if wrap is not None:
+        cap = wrap * ax.figure.bbox.width
+        for ann in anns:
+            text = _wrapped(renderer, ann, ann._fs_text, cap)
+            if text != ann.get_text():
+                ann.set_text(text)
+                rewrapped = True
     inv = ax.transAxes.inverted()
     boxes = [_box(a, renderer, inv) for a in anns]
     heights = [b.height for b in boxes]
@@ -560,7 +607,7 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap):
         if show != ann.arrow_patch.get_visible():
             moved = True
         ann.arrow_patch.set_visible(show)
-    return moved
+    return moved or rewrapped
 
 
 def _on_draw(event):
@@ -639,7 +686,7 @@ def _end_panel_at(ax, xend, span):
     ax.set_xlim(ax.get_xlim()[0], xend + _END_PAD * span)
 
 
-def label_lines(ax, fontsize=None, gap=None, x=None, texts=None):
+def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
     """Label each data line at its right-hand end, in the line's own colour.
 
     Replaces `ax.legend()`. Places one coloured label per line just past its
@@ -660,6 +707,13 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None):
     half times its height) gets a hairline leader back to it. A series whose
     end the axes limits clip off is an error: its anchor sits outside the
     panel, and the figure's limits are what need fixing.
+
+    A label wider than `wrap` of the figure width would take that width from
+    the panel, so it is broken at spaces into the fewest lines (up to three)
+    that fit, cut as evenly as possible. The decision is made at every draw,
+    so the paper and slide renders each get their own answer. A label broken
+    by hand (with a newline in it) is kept as written; `wrap=None` turns
+    this off.
 
     `gap` sets a minimum separation (axes fraction) over the measured one, for
     the occasional figure that wants the labels further apart than they
@@ -726,10 +780,13 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None):
             arrowprops=leader,
         )
         ann.arrow_patch.set_visible(False)
+        # The text as given: wrapping is re-decided from it at every draw,
+        # so a label wrapped at one size can go back to one line at another.
+        ann._fs_text = ann.get_text()
         anns.append(ann)
 
     _defer(ax, partial(_place, ax=ax, anns=anns, lines=lines, ends=ends,
-                       fixed=fixed, gap=gap))
+                       fixed=fixed, gap=gap, wrap=wrap))
 
 
 # Where a point label may sit, in order of preference: beside the point

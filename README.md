@@ -38,7 +38,10 @@ ps.save(fig, '../results/figures/fig1')
 hang beyond the panel, and the layout engine measures the margin they need
 and shrinks the axes to fit, so the panel ends where the data ends and the
 grid stops with it. Leave `tight_layout()` out: on such a figure it warns
-and switches the engine off.
+and switches the engine off. A label wider than a fifth of the figure
+width is broken at spaces into two or three balanced lines, decided per
+output size; a label you break by hand (with a newline) is kept as
+written, and `label_lines(ax, wrap=None)` turns wrapping off.
 
 `save` writes `fig1.pdf` at paper width (5.9 in) and
 `fig1_slides.pdf` at slide width (4.1 in), re-solving label placement

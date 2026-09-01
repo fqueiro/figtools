@@ -262,6 +262,54 @@ def test_label_lines_keeps_a_limit_set_by_hand():
     plt.close(fig)
 
 
+def test_label_lines_wraps_a_wide_label_per_output_size():
+    """A label wider than a fifth of the figure is cut at spaces into the
+    fewest balanced lines that fit, and the decision is re-made at every
+    draw: a size that has room keeps on one line what a smaller one wraps."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(10, 4))
+    x = np.arange(2023, 2051)
+    ax.plot(x, np.linspace(0, 1, len(x)), label='Potencial a longo prazo')
+    ax.plot(x, np.linspace(0, 0.5, len(x)), label='Défice')
+    ps.label_lines(ax)
+    fig.canvas.draw()
+    shown = {t._fs_text: t.get_text() for t in ax.texts}
+    assert shown['Potencial a longo prazo'] == 'Potencial a longo prazo'
+    fig.set_size_inches(4.5, 2.4)
+    fig.canvas.draw()
+    shown = {t._fs_text: t.get_text() for t in ax.texts}
+    assert shown['Potencial a longo prazo'] == 'Potencial a\nlongo prazo'
+    assert shown['Défice'] == 'Défice'
+    assert ps.collisions(fig) == []
+    fig.set_size_inches(10, 4)
+    fig.canvas.draw()
+    assert {t.get_text() for t in ax.texts} == {'Potencial a longo prazo',
+                                                'Défice'}
+    plt.close(fig)
+
+
+def test_label_lines_leaves_a_label_broken_by_hand_alone():
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.4))
+    x = np.arange(2023, 2051)
+    ax.plot(x, np.linspace(0, 1, len(x)), label='per worker, excluding\nGermany')
+    ps.label_lines(ax)
+    fig.canvas.draw()
+    assert ax.texts[0].get_text() == 'per worker, excluding\nGermany'
+    plt.close(fig)
+
+
+def test_label_lines_wrap_none_keeps_a_wide_label_on_one_line():
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.4))
+    x = np.arange(2023, 2051)
+    ax.plot(x, np.linspace(0, 1, len(x)), label='current-PPP expenditure')
+    ps.label_lines(ax, wrap=None)
+    fig.canvas.draw()
+    assert ax.texts[0].get_text() == 'current-PPP expenditure'
+    plt.close(fig)
+
+
 def test_label_lines_rejects_an_axes_with_nothing_labelled():
     ps.setup()
     fig, ax = plt.subplots()
