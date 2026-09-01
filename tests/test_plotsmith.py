@@ -450,6 +450,22 @@ def test_key_entries_clear_each_other_in_a_small_panel():
     plt.close(fig)
 
 
+def test_key_entries_clear_each_other_in_a_tall_panel():
+    """The opposite case: in a tall panel the entries are small in axes
+    fraction, and a step of 15% of their height leaves less than the
+    collision pad between them (the paper's 27-country decomposition, once
+    constrained layout let the panel fill the figure)."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 6.6))
+    x = np.linspace(0, 1, 30)
+    ax.plot(x, 0.05 + 0.02 * x, color=ps.PALETTE[0], label='a')
+    ax.set_ylim(0, 1)
+    ps.key(ax, [('Capital humano', ps.PALETTE[2]),
+                ('Capital físico', ps.PALETTE[3]), ('PTF', ps.PALETTE[0])])
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
 def test_dotplot_sorts_values_and_carries_labels_and_colours_along():
     ps.setup()
     fig, ax = plt.subplots()

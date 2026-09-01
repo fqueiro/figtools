@@ -868,8 +868,12 @@ def _place_key(renderer, ax, anns, entries, lineheight, order, fixed):
     if lineheight is None:
         # The step that clears is the entries' own measured height. A fixed
         # fraction of the panel overlaps as soon as the panel is small or
-        # the type is big; measuring tracks both.
-        lineheight = 1.15 * max(b.height for b in boxes)
+        # the type is big; measuring tracks both. The floor is what
+        # `collisions` demands (its pad, with clearance): in a tall panel
+        # the entries are small in axes fraction, and 15% of their height
+        # alone leaves less than the pad between them.
+        tall = max(b.height for b in boxes)
+        lineheight = max(1.15 * tall, tall + 0.007)
     w = max(b.width for b in boxes)
     h = lineheight * (len(anns) - 1) + max(b.height for b in boxes)
     curves = ([_curve(ax, ln) for ln in _data_lines(ax)]
