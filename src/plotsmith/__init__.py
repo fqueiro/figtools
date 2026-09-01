@@ -15,9 +15,14 @@ The choices follow Kieran Healy's *Data Visualization* practices:
   * Direct labelling in place of legends. A legend forces a reader to hold a
     colour in memory and hop between the key and the line; a label at the end
     of the line does not. `label_lines`, `label_points` and `label_last` do
-    this, and `key` is the fallback for the figure that cannot.
+    this, and `key` is the fallback for the figure that cannot. Line labels
+    hang in the figure margin beyond the panel, the way ggplot draws them
+    with clipping off: the panel stays the data region, and the layout
+    engine reserves the space the labels need rather than the axis being
+    stretched to hold them.
   * Gridlines only on the axis carrying the measurement, drawn light and
-    behind the data, so they support reading values without competing.
+    behind the data, so they support reading values without competing; they
+    stop where the data stops instead of running on under the labels.
   * No frame around the data at all: no spines, no tick marks. The grid and
     the floating tick labels carry every reference the reader needs; axis
     lines are frame ink.
@@ -75,7 +80,6 @@ __all__ = [
     'label_points',
     'label_scatter',
     'load',
-    'make_room',
     'panels',
     'pointrange',
     'refline',
@@ -139,6 +143,15 @@ def setup(base=BASE_SIZE):
         'figure.dpi': 110,
         'savefig.dpi': 200,
         'savefig.bbox': 'tight',
+
+        # Layout. Constrained: the direct labels hang beyond the panel, and
+        # the layout engine measures the margin they need and shrinks the
+        # axes to fit, so a figure leaves at its target width with every
+        # label inside it (without an engine they would run off the figure).
+        # It re-runs on every draw, so `save` re-solving at another size
+        # still fits. A `tight_layout()` call on such a figure warns and
+        # switches the engine off: drop the call instead.
+        'figure.constrained_layout.use': True,
 
         # Type. One family, two sizes: the reader should not have to decode
         # a typographic hierarchy on top of the data.
@@ -429,14 +442,15 @@ def _box(artist, renderer, inv):
     return mpl.text.Text.get_window_extent(artist, renderer).transformed(inv)
 
 
-def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
+def _place(renderer, ax, anns, lines, ends, fixed, gap):
     """Position every direct label on `ax`; return whether anything moved.
 
     Two things have to be true of a finished label: it does not sit on another
     label, and it does not sit on a plotted line. Both are properties of the
     drawn figure, not of the data, so this runs at draw time (when the axes box
-    has its final size, after `tight_layout`) and recomputes from the anchors
-    each pass, which makes it idempotent and safe to re-run on any later draw.
+    has its final size, after the layout engine has run) and recomputes from
+    the anchors each pass, which makes it idempotent and safe to re-run on any
+    later draw.
     """
     inv = ax.transAxes.inverted()
     boxes = [_box(a, renderer, inv) for a in anns]
@@ -451,12 +465,12 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, room):
     want = [float(a[1]) for a in anchors]
     xf = [float(a[0]) for a in anchors]
 
-    # A series finishing within a tenth of the data range of the right edge
+    # A series finishing within a tenth of the panel width of the right edge
     # belongs to the margin group and is spread against the rest of it; one
     # stopping earlier is labelled where it actually ends, since dragging it
     # to the margin would strand it in the middle of the data.
     xmax = max(xf)
-    at_edge = [i for i, v in enumerate(xf) if v >= xmax - 0.1 / (1 + room)]
+    at_edge = [i for i, v in enumerate(xf) if v >= xmax - 0.1]
 
     # The separation that actually clears is the height of the labels
     # themselves, which is measurable; `gap` only raises that floor. Deriving
@@ -594,46 +608,58 @@ def _renderer(fig):
         return None
 
 
-def _widen(ax, axis, room):
-    """Extend one axis limit by `room` to make label space, exactly once.
+# How far past the last point the panel ends, as a fraction of the data's
+# x-span: enough to hold an end marker or a round line cap, which the panel
+# edge would otherwise cut through the middle. A label starts `_LABEL_GAP` of
+# the panel width past its line end, which puts a margin label just beyond
+# the panel edge and an early-ending one just past where its line stops.
+_END_PAD = 0.012
+_LABEL_GAP = 0.018
 
-    The pre-widening limits are remembered on every axes sharing this axis,
-    so the next call (the next panel of a sharex grid, or a `make_room`
-    before `label_lines`) measures the same data span instead of compounding
-    room on room: four shared panels would otherwise end 1.22^4 wide, the
-    data squeezed into half of each. Returns the data limits the room was
-    measured from; ticks stay inside them.
+
+def _end_panel_at(ax, xend, span):
+    """End the panel a hair past `xend`, unless the x-limit was set by hand.
+
+    Matplotlib's autoscale pads the data by 5% on each side, and a label hung
+    past the last point would straddle that strip: gridlines under its first
+    letters, the rest in the margin. So while the x-axis is still autoscaling
+    the right limit moves to the data end plus `_END_PAD` of `span`, and the
+    grid stops with the data. A limit set by hand is the figure's own
+    decision (a horizon drawn past the data) and stays. Shared x-axes are
+    treated as one: every panel ends at the latest end asked of any of them,
+    so a panel labelled later cannot clip the lines of one labelled earlier.
     """
-    shared = (ax.get_shared_x_axes() if axis == 'x'
-              else ax.get_shared_y_axes()).get_siblings(ax)
-    attr = f'_fs_base_{axis}lim'
-    base = next((getattr(a, attr) for a in shared if hasattr(a, attr)), None)
-    if base is None:
-        base = ax.get_xlim() if axis == 'x' else ax.get_ylim()
-        for a in shared:
-            setattr(a, attr, base)
-    lo, hi = base
-    setl = ax.set_xlim if axis == 'x' else ax.set_ylim
-    setl(lo, hi + room * (hi - lo))
-    _trim_ticks(ax, axis, lo, hi)
-    return lo, hi
+    shared = ax.get_shared_x_axes().get_siblings(ax)
+    asked = [a._fs_xend for a in shared if hasattr(a, '_fs_xend')]
+    if not asked and not ax.get_autoscalex_on():
+        return
+    xend = max([xend, *asked])
+    for a in shared:
+        a._fs_xend = xend
+    ax.set_xlim(ax.get_xlim()[0], xend + _END_PAD * span)
 
 
-def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
+def label_lines(ax, fontsize=None, gap=None, x=None, texts=None):
     """Label each data line at its right-hand end, in the line's own colour.
 
-    Replaces `ax.legend()`. Extends the x-limit by `room` (a fraction of the
-    data x-range, applied once even on shared axes) to make space, then
-    places one coloured label per line at its final finite value. Labels are
-    spread apart by their own measured height and moved clear of anything
-    they would otherwise sit on: another label, a reference-line or
+    Replaces `ax.legend()`. Places one coloured label per line just past its
+    final finite value, hanging in the figure margin beyond the panel: the
+    panel stays the data region, the grid stops with the data, and the
+    layout engine reserves the space the labels need (see `setup`). While
+    the x-axis is still autoscaling the panel is ended a hair past the last
+    line end, since autoscale's own padding would leave the labels
+    straddling the panel edge; a right limit set by hand is kept, and if it
+    runs past the data the labels sit inside the panel at their line ends.
+    Shared x-axes end at the latest line end among the panels labelled.
+
+    Labels are spread apart by their own measured height and moved clear of
+    anything they would otherwise sit on: another label, a reference-line or
     shaded-band annotation, or a plotted line. The margin labels always read
     top-to-bottom in the order the lines end, so the ladder itself carries
     the pairing; a label moved clearly off its own line (beyond one and a
     half times its height) gets a hairline leader back to it. A series whose
-    end the axes limits clip off is an error: its
-    anchor sits outside the panel, and the figure's limits are what need
-    fixing.
+    end the axes limits clip off is an error: its anchor sits outside the
+    panel, and the figure's limits are what need fixing.
 
     `gap` sets a minimum separation (axes fraction) over the measured one, for
     the occasional figure that wants the labels further apart than they
@@ -648,12 +674,7 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
         raise ValueError(f'label_lines: {len(texts)} texts for '
                          f'{len(lines)} lines')
 
-    # The added margin is label space, not data space: ticks stay off it so
-    # the axis does not advertise a range the data never reaches, and on
-    # shared axes the widening applies once rather than once per panel.
-    x0, x1 = _widen(ax, 'x', room)
-
-    ends = []
+    ends, starts = [], []
     for ln in lines:
         xd, yd = np.asarray(ln.get_xdata(), float), np.asarray(ln.get_ydata(), float)
         ok = np.isfinite(xd) & np.isfinite(yd)
@@ -661,6 +682,11 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
             raise ValueError(f'label_lines: series {ln.get_label()!r} is empty')
         j = np.flatnonzero(ok)[-1]
         ends.append((xd[j], yd[j]))
+        starts.append(float(xd[ok].min()))
+
+    xend = max(xe for xe, _ in ends)
+    _end_panel_at(ax, xend, xend - min(starts))
+    x0, x1 = ax.get_xlim()
 
     # A line whose end the limits clip off cannot be labelled at its end:
     # the anchor sits outside the panel and the label would name a line that
@@ -694,7 +720,7 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
         ann = ax.annotate(
             texts[i] if texts is not None else ln.get_label(),
             xy=(xe, ye),
-            xytext=((x if x is not None else xe) + 0.012 * (x1 - x0), ye),
+            xytext=((x if x is not None else xe) + _LABEL_GAP * (x1 - x0), ye),
             color=ln.get_color(), fontsize=fontsize,
             va='center', ha='left', clip_on=False, annotation_clip=False,
             arrowprops=leader,
@@ -703,7 +729,7 @@ def label_lines(ax, room=0.22, fontsize=None, gap=None, x=None, texts=None):
         anns.append(ann)
 
     _defer(ax, partial(_place, ax=ax, anns=anns, lines=lines, ends=ends,
-                       fixed=fixed, gap=gap, room=room))
+                       fixed=fixed, gap=gap))
 
 
 # Where a point label may sit, in order of preference: beside the point
@@ -905,37 +931,13 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     return anns
 
 
-def _trim_ticks(ax, axis, lo, hi):
-    """Drop ticks outside [lo, hi], keeping any hand-set tick text.
-
-    Re-setting ticks by position alone would discard category labels, so the
-    labels are carried across with their positions.
-    """
-    a = ax.xaxis if axis == 'x' else ax.yaxis
-    pos = list(a.get_ticklocs())
-    txt = [t.get_text() for t in a.get_ticklabels()]
-    keep = [i for i, t in enumerate(pos) if lo <= t <= hi]
-    setter = ax.set_xticks if axis == 'x' else ax.set_yticks
-    # Empty strings mean matplotlib is still formatting these itself; let it.
-    if len(txt) == len(pos) and any(txt):
-        setter([pos[i] for i in keep], [txt[i] for i in keep])
-    else:
-        setter([pos[i] for i in keep])
-
-
-def make_room(ax, room=0.22, axis='x'):
-    """Widen an axis limit to leave space for direct labels beyond the data.
-
-    `label_lines` does this itself; call it explicitly when placing labels
-    with `label_last`. Ticks stay inside the original data range, and on
-    shared axes (or after an earlier call) the widening applies once rather
-    than compounding.
-    """
-    _widen(ax, axis, room)
-
-
 def label_last(ax, x, y, text, color, dx=4, dy=0, fontsize=None, **kw):
-    """Place one direct label at (x, y), for series drawn without a Line2D."""
+    """Place one direct label at (x, y), for series drawn without a Line2D.
+
+    Past the panel's right edge it hangs in the margin like a `label_lines`
+    label, and the layout engine makes room for it; end the panel at the
+    data with `ax.set_xlim` so the grid stops where the labels start.
+    """
     fontsize = _text_size() if fontsize is None else fontsize
     ax.annotate(text, xy=(x, y), xytext=(dx, dy), textcoords='offset points',
                 color=color, fontsize=fontsize, va='center', clip_on=False,

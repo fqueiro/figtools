@@ -1,7 +1,7 @@
 """Tests for the plotsmith package.
 
 Every failure this guards against is silent. A label nudged apart from its
-neighbours can be pushed outside the panel and simply not appear; a label can
+neighbours can be pushed off the figure and simply not appear; a label can
 come to rest on top of a line, or on another label, and still render. Nothing
 raises and the figure still looks finished, so only measuring it catches any
 of this.
@@ -104,16 +104,29 @@ def test_label_lines_puts_an_early_ending_series_at_its_own_end():
     plt.close(fig)
 
 
-def test_label_lines_keeps_ticks_off_the_label_margin():
-    """The space added for labels is not data space, so it carries no ticks."""
+def test_label_lines_ends_the_panel_at_the_data_and_hangs_labels_beyond_it():
+    """The axis used to be stretched to hold the labels, so every gridline
+    ran on under them. The panel now ends a hair past the last point, the
+    labels sit in the figure margin, and the layout engine keeps them inside
+    the figure."""
     ps.setup()
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
     x = np.arange(1954, 2024)
-    ax.plot(x, np.linspace(0, 1, len(x)), label='a')
-    ax.set_xlim(1954, 2024)
-    ps.label_lines(ax, room=0.3)
-    assert max(ax.get_xticks()) <= 2024
-    assert ax.get_xlim()[1] > 2024
+    ax.plot(x, np.linspace(0, 1, len(x)), label='a long label at the end')
+    ax.plot(x, np.linspace(0, 0.5, len(x)), label='b')
+    ps.label_lines(ax)
+    assert 2023 < ax.get_xlim()[1] < 2023 + 0.02 * 69
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    panel_right = ax.get_window_extent(r).x1
+    for t in ax.texts:
+        # The text alone: an annotation's own extent unions in its leader.
+        box = matplotlib.text.Text.get_window_extent(t, r)
+        assert box.x0 >= panel_right
+        assert box.x1 <= fig.get_figwidth() * fig.dpi
+    grid_right = max(tk.gridline.get_window_extent(r).x1
+                     for tk in ax.yaxis.get_major_ticks())
+    assert grid_right <= panel_right + 1
     plt.close(fig)
 
 
@@ -142,7 +155,6 @@ def test_label_lines_keeps_margin_labels_in_the_order_of_the_line_ends():
         ax.set_ylim(40, 520)
         ps.refline(ax, 100, axis='y', ls='-', lw=0.8)
         ps.label_lines(ax)
-    plt.tight_layout()
     fig.canvas.draw()
     for ax, ends in zip(axes.flat, panels):
         anns = [a for a in ax.texts if a.get_text() in ends]
@@ -167,7 +179,6 @@ def test_label_lines_puts_a_clear_label_on_its_line_with_no_leader():
     ax.set_xlim(2000, 2020)
     ax.set_ylim(0, 1)
     ps.label_lines(ax)
-    plt.tight_layout()
     fig.canvas.draw()
     top = next(t for t in ax.texts if t.get_text() == 'top')
     assert top.get_position()[1] == pytest.approx(0.90, abs=1e-6)
@@ -196,7 +207,6 @@ def test_leaders_appear_only_when_a_label_is_clearly_off_its_line():
     ax.set_xlim(2000, 2020)
     ax.set_ylim(0, 1)
     ps.label_lines(ax)
-    plt.tight_layout()
     fig.canvas.draw()
     vis = {t.get_text(): t.arrow_patch.get_visible() for t in ax.texts}
     assert not any(vis[k] for k in 'abc')
@@ -205,19 +215,22 @@ def test_leaders_appear_only_when_a_label_is_clearly_off_its_line():
     plt.close(fig)
 
 
-def test_label_lines_widens_a_shared_axis_once():
-    """Four sharex panels used to widen the axis by 1.22 four times over,
-    squeezing the data into half of each panel."""
+@pytest.mark.parametrize('first', [0, 1])
+def test_label_lines_ends_shared_panels_at_the_latest_line_end(first):
+    """Two sharex panels whose series stop in different years, labelled in
+    either order: neither call may clip the other panel's lines, so both end
+    at the later year, and the shorter series is labelled where it stops."""
     ps.setup()
-    fig, axes = plt.subplots(2, 2, sharex=True, sharey=True)
-    x = np.arange(2000, 2021)
-    for ax in axes.flat:
-        ax.plot(x, np.linspace(1, 2, len(x)), label='a')
-        ax.plot(x, np.linspace(1, 1.5, len(x)), label='b')
-    axes.flat[0].set_xlim(2000, 2020)
-    for ax in axes.flat:
+    fig, axes = plt.subplots(1, 2, sharex=True)
+    long, short = np.arange(2000, 2021), np.arange(2000, 2016)
+    axes[0].plot(long, np.linspace(1, 2, len(long)), label='a')
+    axes[1].plot(short, np.linspace(1, 2, len(short)), label='b')
+    for ax in (axes[first], axes[1 - first]):
         ps.label_lines(ax)
-    assert axes.flat[0].get_xlim()[1] == pytest.approx(2020 + 0.22 * 20)
+    for ax in axes:
+        assert 2020 < ax.get_xlim()[1] < 2020 + 0.02 * 20
+    pos = {t.get_text(): t.get_position()[0] for t in axes[1].texts}
+    assert 2015 < pos['b'] < 2016
     plt.close(fig)
 
 
@@ -235,15 +248,17 @@ def test_label_lines_rejects_a_series_whose_end_the_limits_clip():
     plt.close(fig)
 
 
-def test_make_room_does_not_compound_with_label_lines():
+def test_label_lines_keeps_a_limit_set_by_hand():
+    """A right limit the figure set itself is its own decision (a horizon
+    drawn past the data): it stays, and the label sits at the line end."""
     ps.setup()
     fig, ax = plt.subplots()
     x = np.arange(2000, 2021)
     ax.plot(x, np.linspace(1, 2, len(x)), label='a')
-    ax.set_xlim(2000, 2020)
-    ps.make_room(ax)
+    ax.set_xlim(2000, 2030)
     ps.label_lines(ax)
-    assert ax.get_xlim()[1] == pytest.approx(2020 + 0.22 * 20)
+    assert ax.get_xlim() == (2000, 2030)
+    assert 2020 < ax.texts[0].get_position()[0] < 2021
     plt.close(fig)
 
 
@@ -286,7 +301,6 @@ def test_label_lines_moves_a_label_off_another_series_line():
     fig, ax = plt.subplots(figsize=(5.2, 3.2))
     _short_and_long(ax)
     ps.label_lines(ax)
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     plt.close(fig)
 
@@ -302,7 +316,6 @@ def test_band_and_reference_labels_end_up_clear_of_the_data():
     ps.refline(ax, 1, 'parity')
     ps.shade(ax, 1950, 1985, 'fragile data')
     ps.label_lines(ax)
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     plt.close(fig)
 
@@ -331,7 +344,6 @@ def test_label_points_separates_a_cluster():
              'Germany', 'Italy']
     ax.scatter(x, y, s=18)
     ps.label_points(ax, x, y, names)
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     assert {t.get_text() for t in ax.texts} == set(names)
     plt.close(fig)
@@ -368,7 +380,6 @@ def test_key_moves_to_a_corner_the_data_leaves_free():
     ax.plot(x, 1 - x, color=ps.PALETTE[0], label='a')
     ax.plot(x, 0.9 - x, color=ps.PALETTE[1], label='b')
     ps.key(ax, [('a', ps.PALETTE[0]), ('b', ps.PALETTE[1])])
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     plt.close(fig)
 
@@ -386,7 +397,6 @@ def test_key_avoids_strokes_drawn_as_collections():
     ax.hlines([0.85, 0.9, 0.95], 0.6, 1.0, color=ps.GREY['grid'])
     anns = ps.key(ax, [('Portugal', ps.PALETTE[0]),
                        ('North mean', ps.PALETTE[1])])
-    plt.tight_layout()
     fig.canvas.draw()
     assert (anns[0].get_ha(), anns[0].get_va()) == ('right', 'bottom')
     plt.close(fig)
@@ -406,7 +416,6 @@ def test_key_avoids_reference_rules():
     ps.refline(ax, 0.85, axis='x')
     anns = ps.key(ax, [('own deflators', ps.PALETTE[0]),
                        ('harmonized', ps.PALETTE[1])])
-    plt.tight_layout()
     fig.canvas.draw()
     assert (anns[0].get_ha(), anns[0].get_va()) == ('left', 'bottom')
     plt.close(fig)
@@ -437,7 +446,6 @@ def test_key_entries_clear_each_other_in_a_small_panel():
     ax.set_ylim(0, 1)   # keep the line at the bottom, corners free
     ps.key(ax, [('leaders', ps.PALETTE[0]), ('envelope', ps.PALETTE[0]),
                 ('EU', ps.GREY['rule']), ('Portugal', ps.PALETTE[1])])
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     plt.close(fig)
 
@@ -513,9 +521,14 @@ def test_pointrange_is_labelled_like_any_series_and_checks_clean():
     ps.refline(ax, 0)
     ps.refline(ax, -0.5, axis='x')
     ps.label_lines(ax)
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     assert ln in ps._plotted_lines(ax)
+    # The panel ends past the last estimate by enough that the panel edge
+    # does not cut its marker in half.
+    r = fig.canvas.get_renderer()
+    centre = ax.transData.transform((t[-1], b[-1]))[0]
+    radius = ln.get_markersize() / 2 * fig.dpi / 72
+    assert centre + radius <= ax.get_window_extent(r).x1
     plt.close(fig)
 
 
@@ -544,7 +557,6 @@ def test_label_scatter_marks_are_data_not_labels():
     fig, ax = plt.subplots()
     ps.label_scatter(ax, [1.0, 1.001, 3.0], [1.0, 1.001, 3.0],
                      ['a', 'b', 'c'], fit=True, note=True)
-    plt.tight_layout()
     assert ps.collisions(fig) == []
     assert ax.get_xlim()[1] >= 3.0   # text alone does not autoscale
     plt.close(fig)

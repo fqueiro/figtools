@@ -2,11 +2,12 @@
 
 Matplotlib figure style for research documents, following Kieran Healy's
 *Data Visualization* practices: Tol vibrant palette in fixed order, direct
-labels instead of legends (with collision-avoiding placement and hairline
-leaders), gridlines only on the measured axis, no frame at all (no spines,
-no tick marks), annotated reference lines and bands, Cleveland dot plots
-over bars, and a measurable check that no label sits on a line, a marker,
-or another label.
+labels hanging in the margin beyond the panel instead of legends (with
+collision-avoiding placement and hairline leaders), gridlines only on the
+measured axis and only across the data, no frame at all (no spines, no tick
+marks), annotated reference lines and bands, Cleveland dot plots over bars,
+and a measurable check that no label sits on a line, a marker, or another
+label.
 
 ## Install
 
@@ -32,6 +33,12 @@ ps.refline(ax, 1, 'parity')
 ps.label_lines(ax)              # direct labels replace the legend
 ps.save(fig, '../results/figures/fig1')
 ```
+
+`setup` also turns on matplotlib's constrained layout. The direct labels
+hang beyond the panel, and the layout engine measures the margin they need
+and shrinks the axes to fit, so the panel ends where the data ends and the
+grid stops with it. Leave `tight_layout()` out: on such a figure it warns
+and switches the engine off.
 
 `save` writes `fig1.pdf` at paper width (5.9 in) and
 `fig1_slides.pdf` at slide width (4.1 in), re-solving label placement
