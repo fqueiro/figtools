@@ -43,9 +43,20 @@ width is broken at spaces into two or three balanced lines, decided per
 output size; a label you break by hand (with a newline) is kept as
 written, and `label_lines(ax, wrap=None)` turns wrapping off.
 
+Two house rules the helpers assume. The caption names the quantity, its
+unit and its sign convention, and the reference rule is named on the line
+(`refline(ax, 1, 'parity')`), so the axes carry no title that repeats
+them; a title stays only where the ticks alone would mislead, as on a
+scatter whose two axes are different variables. Limits are left to
+autoscale, which includes the reference rule, and a named rule at the top
+of the data takes the headroom its label needs; a limit set by hand states
+its reason in a comment.
+
 `save` writes `fig1.pdf` at paper width (5.9 in) and
 `fig1_slides.pdf` at slide width (4.1 in), re-solving label placement
-at each size and refusing to write a variant whose labels collide. Include
+at each size and refusing to write a variant whose labels collide or whose
+text runs off the figure (a y-title taller than the panel is cut without a
+word otherwise). Include
 the PDFs in LaTeX at natural size, with no `width=` option: the figure was
 rendered at the physical size of its destination, so its type lands on the
 page at the exact point size `setup` chose. Scaling at `\includegraphics`
@@ -71,7 +82,7 @@ uv run fig-check code adoption_lifecycle  # one document
 
 Runs each document's code the way its renderer would (`.qmd` python chunks,
 `.ipynb` code cells) and measures every figure with `collisions`; exits
-non-zero on any overlap; the check replaces eyeballing the
+non-zero on any overlap or any text off the figure; the check replaces eyeballing the
 rendered figures. The library itself has no document-format dependence, so
 plain scripts check their own figures inline with
 `assert not ps.collisions(fig)`.

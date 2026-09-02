@@ -28,6 +28,12 @@ The choices follow Kieran Healy's *Data Visualization* practices:
     lines are frame ink.
   * Reference lines and shaded bands annotated in place ("parity", "fragile
     data") rather than left for the reader to infer.
+  * The caption names the quantity, its unit and its sign convention, and
+    the reference rule is named on the line, so the axes carry no title
+    that repeats them; a title stays only where the ticks alone would
+    mislead, as on a scatter whose two axes are different variables. Limits
+    are left to autoscale, which includes the reference rule; a limit set
+    by hand states its reason in a comment.
   * Two type sizes derived from one base (`setup(base=...)`): titles and
     axis labels at the base, every other piece of text half a point below.
     One knob makes size drift between elements structurally impossible, and
@@ -756,11 +762,10 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
                 'limits or drop the series')
 
     # Anything already annotated on this axes is furniture the labels have to
-    # avoid, so capture it before adding any of our own.
+    # avoid, so capture it before adding any of our own. The y-range is left
+    # to autoscale: placement re-solves from the data anchors at every draw,
+    # so a rule or a sibling panel's series added later just widens it.
     fixed = list(ax.texts)
-    # Freeze the limits: placement is computed in axes fractions, so a later
-    # autoscale would silently move every label off its line.
-    ax.set_ylim(*ax.get_ylim())
 
     anns = []
     for i, (ln, (xe, ye)) in enumerate(zip(lines, ends)):
@@ -1059,6 +1064,15 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
             if _headroom(ax, box, curves, box.height + 0.04):
                 return True
         w = order[0]
+    if axis == 'y' and box.y1 > 0.985:
+        # A rule at the top of the data (parity above a deficit) leaves its
+        # label no room above the line: it would hover over the panel's edge,
+        # on nothing it names. Raise the top by the measured overshoot; the
+        # next draw re-measures, so a scale that is not linear settles in a
+        # step or two rather than needing the arithmetic to be exact.
+        y0, _ = ax.get_ylim()
+        ax.set_ylim(y0, float(_to_data(ax, [(0.0, box.y1 + 0.02)])[0][1]))
+        return True
     if abs(w - here) < 1e-4:
         return False
     ann.xy = (w, ann.xy[1]) if axis == 'y' else (ann.xy[0], w)
@@ -1178,16 +1192,44 @@ def dotplot(ax, labels, values, ci=None, color=None, baseline=0.0, sort=True,
     return ax
 
 
+def _drawn_texts(fig):
+    """Every piece of text the drawn figure shows, with its panel index (-1
+    for figure-level text): annotations, titles, axis titles, offset texts
+    and the tick labels inside the view. Ticks outside the view exist as
+    artists but are never drawn, so they are skipped."""
+    for t in fig.texts:
+        yield -1, t
+    for n, ax in enumerate(fig.axes):
+        if not ax.get_visible():
+            continue
+        for a in ax.get_children():
+            if isinstance(a, mpl.text.Text):
+                yield n, a
+        for axis in (ax.xaxis, ax.yaxis):
+            yield n, axis.label
+            yield n, axis.offsetText
+            lo, hi = sorted(axis.get_view_interval())
+            for tick in [*axis.get_major_ticks(), *axis.get_minor_ticks()]:
+                if lo <= tick.get_loc() <= hi:
+                    yield n, tick.label1
+                    yield n, tick.label2
+
+
 def collisions(fig, pad=0.004):
-    """Report labels that overlap another label or sit on a plotted line.
+    """Report labels that overlap another label or sit on a plotted line,
+    and text that runs off the figure.
 
     Direct labelling fails silently: a label landing on a line, or on another
     label, still renders and still raises nothing, so it survives until
-    somebody looks at the picture. This measures the drawn figure instead.
-    Call it on any figure, not only ones built with `label_lines`.
+    somebody looks at the picture. So does text past the figure's edge: the
+    tight bounding box grows for most of it, which quietly breaks the
+    figure's physical size, but never for an axis title's height, so a
+    y-title taller than the panel is simply cut. This measures the drawn
+    figure instead. Call it on any figure, not only ones built with
+    `label_lines`.
 
     Returns a list of (panel, kind, description) tuples, empty when clean.
-    `kind` is 'label/label' or 'label/line'.
+    `kind` is 'label/label', 'label/line' or 'text/edge'.
     """
     fig.canvas.draw()
     r = _renderer(fig)
@@ -1195,6 +1237,15 @@ def collisions(fig, pad=0.004):
         raise RuntimeError('collisions: this backend exposes no renderer')
 
     found = []
+    W, H = fig.bbox.width, fig.bbox.height
+    for n, t in _drawn_texts(fig):
+        if not t.get_visible() or not t.get_text().strip():
+            continue
+        b = mpl.text.Text.get_window_extent(t, r)
+        if b.x0 < -0.5 or b.y0 < -0.5 or b.x1 > W + 0.5 or b.y1 > H + 0.5:
+            found.append((n, 'text/edge',
+                          f'{" ".join(t.get_text().split())!r} runs off '
+                          'the figure'))
     for n, ax in enumerate(fig.axes):
         inv = ax.transAxes.inverted()
         # Names that ARE the marks (label_scatter) are data, not labels:
@@ -1415,8 +1466,9 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
 
     Re-renders the figure at each target's physical width (height keeps the
     figure's aspect ratio), letting the deferred label placement re-solve
-    for that size, and refuses to write any variant whose labels collide: a
-    bad figure on disk outlives the session that could have noticed it.
+    for that size, and refuses to write any variant whose labels collide or
+    whose text runs off the figure: a bad figure on disk outlives the
+    session that could have noticed it.
     The figure is restored to its on-screen size afterwards.
 
     `widths` adds or overrides target widths, e.g. {'poster': 9.0}.
@@ -1443,8 +1495,9 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
             if hits:
                 what = '\n'.join(f'  panel {p} {kind:12} {msg}'
                                  for p, kind, msg in hits)
-                raise RuntimeError(f'save: label overlaps at the {t} size, '
-                                   f'nothing written for it:\n{what}')
+                raise RuntimeError(f'save: labels overlap or text runs off '
+                                   f'the figure at the {t} size, nothing '
+                                   f'written for it:\n{what}')
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
             fig.savefig(out)

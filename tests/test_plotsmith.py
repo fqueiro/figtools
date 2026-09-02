@@ -310,6 +310,24 @@ def test_label_lines_wrap_none_keeps_a_wide_label_on_one_line():
     plt.close(fig)
 
 
+def test_label_lines_lets_a_shared_y_range_grow_for_a_later_panel():
+    """Two sharey panels labelled inside the loop that draws them, the
+    second reaching higher than the first. Freezing the y-range at the
+    first call used to make the second an error; placement re-solves from
+    the data anchors at every draw, so the range can stay free."""
+    ps.setup()
+    fig, axes = plt.subplots(1, 2, sharey=True)
+    x = np.arange(2000, 2021)
+    for ax, top in zip(axes, [2.0, 3.0]):
+        ax.plot(x, np.linspace(1, top, len(x)), label=f'to {top}')
+        ps.label_lines(ax)
+    fig.canvas.draw()
+    assert axes[1].get_ylim()[1] > 3.0
+    for ax, top in zip(axes, [2.0, 3.0]):
+        assert ax.texts[0].get_position()[1] == pytest.approx(top)
+    plt.close(fig)
+
+
 def test_label_lines_rejects_an_axes_with_nothing_labelled():
     ps.setup()
     fig, ax = plt.subplots()
@@ -365,6 +383,52 @@ def test_band_and_reference_labels_end_up_clear_of_the_data():
     ps.shade(ax, 1950, 1985, 'fragile data')
     ps.label_lines(ax)
     assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_refline_label_at_the_top_of_the_data_takes_its_headroom():
+    """A named rule above a deficit (parity at 1, data below) left its label
+    hovering above the panel's edge, on nothing it names. The panel now
+    grows by the measured overshoot so the label sits inside it."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    x = np.arange(1995, 2024)
+    ax.plot(x, np.linspace(0.62, 0.72, len(x)), label='Portugal')
+    ps.refline(ax, 1, 'UE27')
+    ps.label_lines(ax)
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    lab = next(t for t in ax.texts if t.get_text() == 'UE27')
+    box = matplotlib.text.Text.get_window_extent(lab, r)
+    assert box.y1 <= ax.get_window_extent(r).y1 + 0.5
+    assert ax.get_ylim()[1] > 1.0
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_collisions_reports_text_that_runs_off_the_figure():
+    """A y-title taller than the figure is cut without a word: matplotlib's
+    tight bounding box grows for most text but never for an axis title's
+    height. Measured, it is a finding like any other."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 1.6))
+    ax.plot([0, 1], [0, 1], label='a')
+    ax.set_ylabel('a y-axis title far taller than this small panel')
+    hits = ps.collisions(fig)
+    assert any(kind == 'text/edge' for _, kind, _ in hits)
+    ax.set_ylabel('')
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_save_refuses_text_that_runs_off_the_figure(tmp_path):
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    ax.plot([0, 1], [0, 1], label='a')
+    ax.set_ylabel('a y-axis title far taller than the slide-sized panel')
+    with pytest.raises(RuntimeError, match='off the figure'):
+        ps.save(fig, tmp_path / 'tall')
+    assert not (tmp_path / 'tall_slides.pdf').exists()
     plt.close(fig)
 
 
