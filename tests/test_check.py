@@ -101,7 +101,7 @@ def test_check_reports_a_failed_inline_assert_instead_of_dying(tmp_path):
     doc.write_text(QMD.replace('ps.label_lines(ax)',
                                'ps.label_lines(ax)\nassert False'),
                    encoding='utf-8')
-    n, found = fc.check(doc)
+    _, found = fc.check(doc)
     assert any('assert' in line for line in found)
 
 

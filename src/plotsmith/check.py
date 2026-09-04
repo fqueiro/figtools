@@ -280,7 +280,7 @@ def main(argv=None):
                str(docs), doc.stem]
         if a.figs:
             cmd += ['--figs', str(a.figs)]
-        rc = subprocess.run(cmd).returncode
+        rc = subprocess.run(cmd, check=False).returncode
         if rc not in (0, 1):
             # The document itself crashed; surface that, don't count it.
             return rc
