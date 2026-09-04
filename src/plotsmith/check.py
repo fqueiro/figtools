@@ -3,14 +3,17 @@
 Direct labelling fails silently: a label landing on a line, on a marker, or on
 another label still renders and still raises nothing, so it survives until
 somebody looks at the picture. This runs a document's code the way its
-renderer would (the python chunks of a .qmd, the code cells of a .ipynb) and
-measures each figure it produces with `plotsmith.collisions`, which is quicker
-than rendering and reading, and does not depend on noticing.
+renderer would (the `# %%` cells of a percent-format .py, the python chunks
+of a .qmd, the code cells of a .ipynb) and measures each figure it produces
+with `plotsmith.collisions`, which is quicker than rendering and reading, and
+does not depend on noticing.
 
     uv run fig-check code
     uv run fig-check code adoption_lifecycle
 
-With no document names it checks every .qmd and .ipynb in the directory.
+With no document names it checks every document in the directory: each .qmd
+and .ipynb, and each .py that Quarto would render, which is one with a
+markdown or raw cell marker; a plain module has none and is left alone.
 Exits non-zero if anything overlaps, so it can gate a commit. `--figs DIR`
 writes each figure to DIR as a png, which is how to see what a reported
 overlap looks like.
@@ -35,6 +38,40 @@ from plotsmith import collisions
 
 CHUNK = re.compile(r'^```\{python\}\s*$(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 FIGSIZE = re.compile(r'^\s*fig-(width|height):\s*([\d.]+)\s*$', re.MULTILINE)
+# The percent-format rules below are Quarto's own (quarto-cli,
+# src/core/jupyter/percent.ts), so a cell here is a cell there.
+MARKER = re.compile(r'^\s*#\s*%%+\s*(?:\[(markdown|raw)\])?\s*(.*)?$')
+PROSE = re.compile(r'^\s*#\s*%%+\s+\[(markdown|raw)\]', re.MULTILINE)
+QUOTE = re.compile(r'^"{3,}\s*$')
+
+
+def percent(text):
+    """The cells of a percent-format .py as (kind, body), in order.
+
+    A cell opens at a `# %%` line: alone (or with a title) for code, with
+    `[markdown]` or `[raw]` for prose. Lines before the first marker are
+    dropped. A prose cell is either one triple-quoted string or comment
+    lines, and comes back without its comment prefix, so the front matter
+    reads as YAML.
+    """
+    cells = []
+    for line in text.strip().splitlines():
+        m = MARKER.match(line)
+        if m:
+            cells.append((m.group(1) or 'code', []))
+        elif cells:
+            cells[-1][1].append(line)
+    for kind, rows in cells:
+        while rows and not rows[0].strip():
+            rows.pop(0)
+        while rows and not rows[-1].strip():
+            rows.pop()
+        if kind != 'code':
+            if len(rows) > 2 and QUOTE.match(rows[0]) and QUOTE.match(rows[-1]):
+                rows = rows[1:-1]
+            else:
+                rows = [re.sub(r'^#\s?', '', row) for row in rows]
+        yield kind, '\n'.join(rows)
 
 
 def chunks(text):
@@ -66,19 +103,48 @@ def figsize(text):
     return float(got.get('width', 6.4)), float(got.get('height', 4.8))
 
 
+def parse(doc):
+    """A document's prose, where its front matter lives, and its code cells.
+
+    Each format is read the way its renderer reads it. A notebook carries no
+    front matter, so its prose is empty and the figure size falls to
+    matplotlib's default, which is what its renderer shows.
+    """
+    text = doc.read_text(encoding='utf-8')
+    if doc.suffix == '.qmd':
+        return text, list(chunks(text))
+    if doc.suffix == '.ipynb':
+        return '', list(cells(text))
+    if doc.suffix == '.py':
+        parts = list(percent(text))
+        return ('\n'.join(body for kind, body in parts if kind != 'code'),
+                [body for kind, body in parts if kind == 'code'])
+    raise ValueError(f'{doc.name}: not a format fig-check reads')
+
+
+def documents(folder):
+    """The documents in a folder, sorted.
+
+    Every .qmd and .ipynb, and each .py Quarto would render: one with a
+    markdown or raw cell marker. A plain module has none and is left alone,
+    which matters because checking a document means running it.
+    """
+    found = [*folder.glob('*.qmd'), *folder.glob('*.ipynb')]
+    found += [doc for doc in folder.glob('*.py')
+              if PROSE.search(doc.read_text(encoding='utf-8'))]
+    return sorted(found)
+
+
 def check(doc, figs=None):
     """Run one document and return its overlaps as printable lines."""
-    text = doc.read_text(encoding='utf-8')
-    is_qmd = doc.suffix == '.qmd'
-    # A notebook carries no fig-width header; matplotlib's default size is
-    # what its renderer shows.
-    plt.rcParams['figure.figsize'] = figsize(text) if is_qmd else (6.4, 4.8)
+    prose, bodies = parse(doc)
+    plt.rcParams['figure.figsize'] = figsize(prose)
     # The document's kernel supplies these; cells assume them without
     # importing.
     ns = {'__name__': '__main__', 'display': lambda *a, **k: None,
           'get_ipython': lambda: None}
     found, n = [], 0
-    for i, body in enumerate(chunks(text) if is_qmd else cells(text)):
+    for i, body in enumerate(bodies):
         with warnings.catch_warnings(), redirect_stdout(io.StringIO()):
             warnings.simplefilter('ignore')
             # Running the document's own code is the point: the figures only
@@ -112,7 +178,7 @@ def check(doc, figs=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('docs', type=Path,
-                    help='directory holding the documents (.qmd, .ipynb)')
+                    help='directory holding the documents (.py, .qmd, .ipynb)')
     ap.add_argument('names', nargs='*', help='document stems; default all')
     ap.add_argument('--figs', type=Path, help='also write each figure here')
     ap.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
@@ -122,8 +188,7 @@ def main(argv=None):
     # The documents import their own domain modules (data loaders, semantic
     # colour maps) from the directory they live in.
     sys.path.insert(0, str(docs))
-    targets = [doc for doc
-               in sorted([*docs.glob('*.qmd'), *docs.glob('*.ipynb')])
+    targets = [doc for doc in documents(docs)
                if not a.names or doc.stem in a.names]
 
     if a.figs:

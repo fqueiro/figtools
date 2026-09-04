@@ -76,15 +76,18 @@ Beyond the style: `pointrange` (coefficient profiles, event studies),
 ## Check
 
 ```
-uv run fig-check code                     # every .qmd in code/
+uv run fig-check code                     # every document in code/
 uv run fig-check code adoption_lifecycle  # one document
 ```
 
-Runs each document's code the way its renderer would (`.qmd` python chunks,
-`.ipynb` code cells) and measures every figure with `collisions`; exits
-non-zero on any overlap or any text off the figure; the check replaces eyeballing the
-rendered figures. The library itself has no document-format dependence, so
-plain scripts check their own figures inline with
+Runs each document's code the way its renderer would (the `# %%` cells of a
+percent-format `.py`, `.qmd` python chunks, `.ipynb` code cells) and
+measures every figure with `collisions`; exits non-zero on any overlap or
+any text off the figure; the check replaces eyeballing the rendered
+figures. A `.py` counts as a document when Quarto would render it, that is
+when it has a `# %% [markdown]` or `# %% [raw]` cell; a plain module has
+none and is left alone. The library itself has no document-format
+dependence, so plain scripts check their own figures inline with
 `assert not ps.collisions(fig)`.
 
 ## Tests
