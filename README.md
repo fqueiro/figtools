@@ -86,9 +86,13 @@ measures every figure with `collisions`; exits non-zero on any overlap or
 any text off the figure; the check replaces eyeballing the rendered
 figures. A `.py` counts as a document when Quarto would render it, that is
 when it has a `# %% [markdown]` or `# %% [raw]` cell; a plain module has
-none and is left alone. The library itself has no document-format
-dependence, so plain scripts check their own figures inline with
-`assert not ps.collisions(fig)`.
+none and is left alone. Each figure is drawn at the size the html render
+gives it, resolved as Quarto resolves `fig-width` and `fig-height`: the
+project's `_quarto.yml`, any `_metadata.yml`, and the document's front
+matter, with 7 by 5 inches when none sets them. A name that matches no
+document, or a folder with none, is an error rather than a clean exit. The
+library itself has no document-format dependence, so plain scripts check
+their own figures inline with `assert not ps.collisions(fig)`.
 
 ## Tests
 
