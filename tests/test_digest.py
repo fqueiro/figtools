@@ -225,12 +225,14 @@ def test_markdown_merges_series_on_a_shared_x_and_thins_large_tables():
     ax.plot(x, [2 * v for v in x], label='b')
     ax.plot([0, 1], [5, 6], label='c')
     ps.refline(ax, 1, 'one')
+    ax.annotate('peak', xy=(2, 0.123456))
     text = '\n'.join(digest.markdown(digest.describe(fig), 'fig-t', 'A caption.', 'fig-t'))
     assert text.startswith('### fig-t. A caption.')
     assert '**Panel 1**.' in text and 'x: x' not in text
     assert '| x | a | b |' in text and 'rows thinned to' in text
     assert '| x | c |' in text
     assert 'Reference lines: y = 1 "one".' in text
+    assert 'Labelled points: peak (2, 0.1235).' in text
     assert 'fig-t.csv' in text
 
 

@@ -691,19 +691,19 @@ def _panel_md(p, k):
             lines += [f'*In the digest itself, {s["thinned"]}.*', '']
 
     def where(v, label):
-        return f'{v}' + (f' "{label}"' if label else '')
+        return _fmt(v) + (f' "{label}"' if label else '')
 
     if p.get('rules'):
         lines.append('Reference lines: ' + '; '.join(
             f'{r["axis"]} = ' + where(r['value'], r.get('label')) for r in p['rules']) + '.')
     if p.get('shades'):
         lines.append('Shaded: ' + '; '.join(
-            f'{s["axis"]} from {s["from"]} to ' + where(s['to'], s.get('label'))
+            f'{s["axis"]} from {_fmt(s["from"])} to ' + where(s['to'], s.get('label'))
             for s in p['shades']) + '.')
     pts = p.get('points', [])
     if pts and len(pts) <= 12:
         lines.append('Labelled points: ' + '; '.join(
-            f'{q["text"]} ({q["x"]}, {q["y"]})' for q in pts) + '.')
+            f'{q["text"]} ({_fmt(q["x"])}, {_fmt(q["y"])})' for q in pts) + '.')
     elif pts:
         lines += ['Labelled points:', ''] + _table(
             ['text', 'x', 'y'], [[q['text'], q['x'], q['y']] for q in pts]) + ['']
