@@ -59,11 +59,12 @@ draw callback and recomputes on every draw rather than being decided when the
 label is created. `collisions` measures a drawn figure for what is left; it
 is the check to run on a figure rather than squinting at it.
 
-A figure displayed in a notebook also carries a digest of its plotted data
-inside its PNG (`digest`), so a reader that cannot see the image, a program
-or a language model working from the rendered document, can still read the
-figure: its series, values, rules and annotations, and after a render the
-document's tables and printed output beside them.
+A figure displayed in a notebook, and every PDF `save` writes, carries a
+digest of its plotted data inside the image file (`digest`), so a reader that
+cannot see the image, a program or a language model working from the
+rendered document or the paper, can still read the figure: its series,
+values, rules and annotations, and after a render the document's tables and
+printed output beside them.
 """
 
 import pickle
@@ -1487,10 +1488,15 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
     session that could have noticed it.
     The figure is restored to its on-screen size afterwards.
 
+    Each PDF carries the figure's digest, its plotted data, in its document
+    information (see `digest`), so `render-digest figure <file>` reads the
+    figure back without the document that made it.
+
     `widths` adds or overrides target widths, e.g. {'poster': 9.0}.
     `retouch=True` also pickles the live figure beside the PDFs; `load`
     reopens it for hand-adjustment without rerunning the analysis.
     """
+    from . import digest
     path = Path(path)
     if path.suffix == '.pdf':
         path = path.with_suffix('')
@@ -1516,7 +1522,8 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
                                    f'written for it:\n{what}')
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
-            fig.savefig(out)
+            with digest._quiet_pdf_metadata():
+                fig.savefig(out, metadata=digest.pdf_metadata(digest.describe(fig)))
             written.append(out)
     finally:
         fig.set_size_inches(w0, h0)

@@ -226,7 +226,7 @@ def check(doc, figs=None):
                 hits = collisions(fig)
                 if figs is not None:
                     # The same digest a rendered page's image carries, so
-                    # `render-digest png` reads these too.
+                    # `render-digest figure` reads these too.
                     fig.savefig(figs / f'{doc.stem}_{n}.png', dpi=110,
                                 metadata={KEY: encode(describe(fig))})
             found += [f'  fig {n} panel {p}  {kind:12} {what}'

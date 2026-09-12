@@ -190,27 +190,123 @@ def test_digest_travels_in_the_png_and_comes_back_intact():
     assert digest.from_png(print_figure(fig, fmt='png', base64=False)) is None
 
 
-def test_setup_arms_the_notebook_formatter_once():
+def test_digest_travels_in_a_pdf_and_comes_back_intact():
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [1, 4, 9], label='sq')
+    d = digest.describe(fig)
+    with digest._quiet_pdf_metadata():
+        pdf = print_figure(fig, fmt='pdf', base64=False, metadata=digest.pdf_metadata(d))
+    assert digest.from_pdf(pdf) == json.loads(json.dumps(d))
+    assert digest.from_image(pdf) == digest.from_pdf(pdf)
+    assert digest.from_pdf(print_figure(fig, fmt='pdf', base64=False)) is None
+    with pytest.raises(ValueError):
+        digest.from_image(b'GIF89a')
+
+
+def test_a_long_digest_is_split_across_pdf_entries(monkeypatch):
+    monkeypatch.setattr(digest, 'PDF_PIECE', 40)
+    fig, ax = plt.subplots()
+    ax.plot(range(50), range(50), label='s')
+    d = digest.describe(fig)
+    meta = digest.pdf_metadata(d)
+    assert len(meta) > 2 and digest.KEY in meta and f'{digest.KEY}-2' in meta
+    with digest._quiet_pdf_metadata():
+        pdf = print_figure(fig, fmt='pdf', base64=False, metadata=meta)
+    assert digest.from_pdf(pdf) == json.loads(json.dumps(d))
+
+
+def test_save_writes_pdfs_that_carry_the_digest(tmp_path):
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [1, 2], label='s')
+    ps.label_lines(ax)
+    written = ps.save(fig, tmp_path / 'fig')
+    assert len(written) == 2
+    for path in written:
+        assert digest.from_pdf(path.read_bytes())['panels'][0]['series'][0]['label'] == 's'
+
+
+def test_figure_command_prints_what_an_image_carries(tmp_path, capsys):
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [3, 4], label='s')
+    ps.save(fig, tmp_path / 'fig', targets=('paper',))
+    assert digest.main(['figure', str(tmp_path / 'fig.pdf')]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith('### fig\n') and '| x | s |' in out
+    (tmp_path / 'blank.pdf').write_bytes(print_figure(fig, fmt='pdf', base64=False))
+    assert digest.main(['figure', str(tmp_path / 'blank.pdf')]) == 1
+
+
+def two_figure_pdf(tmp_path):
+    """A stand-in for a rendered document: two figure PDFs' bytes in one file."""
+    fig1, ax1 = plt.subplots()
+    ax1.plot([1, 2], [1, 2], label='first')
+    fig2, ax2 = plt.subplots()
+    ax2.bar(['a', 'b'], [1, 2], label='second')
+    with digest._quiet_pdf_metadata():
+        parts = [print_figure(f, fmt='pdf', base64=False,
+                              metadata=digest.pdf_metadata(digest.describe(f)))
+                 for f in (fig1, fig2)]
+    doc = tmp_path / 'doc.pdf'
+    doc.write_bytes(b''.join(parts))
+    return doc
+
+
+def test_a_document_pdf_yields_every_figure_in_order(tmp_path, capsys):
+    doc = two_figure_pdf(tmp_path)
+    found = digest.pdf_digests(doc.read_bytes())
+    assert [d['panels'][0]['series'][0]['label'] for d in found] == ['first', 'second']
+    assert digest.main(['figure', str(doc)]) == 0
+    out = capsys.readouterr().out
+    assert '### doc, figure 1' in out and '### doc, figure 2' in out
+
+
+def test_extract_pdf_writes_the_figures_beside_the_page_digest(tmp_path):
+    (tmp_path / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    src = tmp_path / 'doc.qmd'
+    src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    doc = two_figure_pdf(tmp_path)
+    cache = tmp_path / 'cache'
+    out = digest.digest_dir(tmp_path, src, cache)
+    summary = digest.extract_pdf(doc, out / 'pdf', source=src, root=tmp_path)
+    assert summary == '2 figures from the PDF'
+    text = (out / 'pdf' / 'outputs.md').read_text(encoding='utf-8')
+    assert text.startswith('# Figures of doc.qmd, from its PDF render')
+    assert '### figure-1' in text and '### figure-2' in text and '| category | second |' in text
+    assert (out / 'pdf' / 'figure-2.csv').exists()
+    assert digest.check(src, cache=cache) == 0   # the PDF render's manifest stands in
+    html = tmp_path / 'doc.html'
+    html.write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    digest.extract(html, out, source=src, root=tmp_path)
+    assert (out / 'outputs.md').exists() and (out / 'pdf' / 'outputs.md').exists()
+
+
+def test_setup_arms_the_notebook_formatters_once():
     # In its own interpreter: enabling the inline backend is process-wide.
+    # Formats are selected before setup, as a Quarto render does.
     code = textwrap.dedent('''
         import base64, json
         import matplotlib
         matplotlib.use('module://matplotlib_inline.backend_inline')
         from IPython.core.interactiveshell import InteractiveShell
         ip = InteractiveShell.instance()
+        from matplotlib_inline.backend_inline import set_matplotlib_formats
+        set_matplotlib_formats('png', 'pdf')
         import matplotlib.pyplot as plt
         from matplotlib.figure import Figure
         import plotsmith as ps
         from plotsmith import digest
         ps.setup()
-        fmt = ip.display_formatter.formatters['image/png']
-        first = fmt.lookup_by_type(Figure)
+        fmts = ip.display_formatter.formatters
+        first = fmts['image/png'].lookup_by_type(Figure)
         assert getattr(first, '_plotsmith_digest', False)
+        assert getattr(fmts['application/pdf'].lookup_by_type(Figure), '_plotsmith_digest', False)
         ps.setup()
-        assert fmt.lookup_by_type(Figure) is first
+        assert fmts['image/png'].lookup_by_type(Figure) is first
         fig, ax = plt.subplots()
         ax.plot([1, 2], [3, 4], label='s')
         d = digest.from_png(base64.b64decode(first(fig)))
+        pdf = fmts['application/pdf'].lookup_by_type(Figure)(fig)
+        assert digest.from_pdf(base64.b64decode(pdf)) == d
         print(json.dumps(d['panels'][0]['series'][0]['label']))
         ''')
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=False)

@@ -8,17 +8,22 @@ and the printed output of a document into one markdown file a program can
 read.
 
 Mechanism. `install()` (run by `setup()` in a notebook kernel) wraps the
-formatter IPython uses to turn a figure into its PNG, so the PNG carries the
-digest as a compressed text chunk under the key `plotsmith-digest`. The
-image is otherwise unchanged and nothing else appears in the cell: a second
-output in a captioned figure cell would turn the pair into subfigures.
-After a render, `post_render()` (Quarto's `post-render` hook) reads each
-embedded image back out of the page, writes the digests as markdown and CSV
-beside the PNGs, converts the page's tables and printed output to text, and
-stamps the lot with a hash of the source, so a reader can tell whether the
-document changed since. Everything lands under
+formatters IPython uses to turn a figure into its PNG or PDF, so the image
+carries the digest under the key `plotsmith-digest`: a compressed text chunk
+in a PNG, an entry of the document information dictionary in a PDF, split
+into pieces under 32 kB where a reader may cap a string. `save` writes the
+same entry into the PDFs it exports for a paper. The image is otherwise
+unchanged and nothing else appears in the cell: a second output in a
+captioned figure cell would turn the pair into subfigures. After a render,
+`post_render()` (Quarto's `post-render` hook) reads each embedded image back
+out of the page, writes the digests as markdown and CSV beside the images,
+converts the page's tables and printed output to text, and stamps the lot
+with a hash of the source, so a reader can tell whether the document changed
+since. Everything lands under
 `~/.local/share/render-digests/<project>/<document path>/`, outside the
-repository and outside Dropbox.
+repository and outside Dropbox. A document rendered to PDF yields its
+figures' digests, read from the document itself since the LaTeX engine
+copies each figure file's entry into it, under `pdf/` in the same folder.
 
 What a digest holds, per panel: the axis titles, scales and kinds (number,
 date, category); each plotted series with its label, colour and values
@@ -33,19 +38,21 @@ six significant digits.
     render-digest where <document>   # the folder a document's digest lands in
     render-digest check <document>   # exit 1 when the source changed since the render
     render-digest extract <page.html> [--source <document>] [--out <folder>]
-    render-digest png <figure.png>   # print the digest a PNG carries
+    render-digest figure <figure.png|.pdf> ...   # print the digest an image carries
 """
 
 import argparse
 import base64
+import contextlib
 import csv
 import hashlib
 import json
 import math
 import os
-import shutil
+import re
 import struct
 import sys
+import warnings
 import zlib
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -63,6 +70,7 @@ VERSION = 1
 CACHE_ROOT = Path.home() / '.local' / 'share' / 'render-digests'
 SERIES_CAP = 5000   # points kept per series in a digest; longer ones are thinned evenly
 TABLE_CELLS = 600   # cells a markdown table may hold before its rows are thinned
+PDF_PIECE = 30000   # characters per information-dictionary string; some readers cap one at 32767 bytes
 
 
 # --- reading a figure ---------------------------------------------------------
@@ -495,15 +503,107 @@ def from_png(data):
     return decode(text) if text else None
 
 
+def pdf_metadata(d):
+    """The metadata entries that carry a digest in a PDF's information dictionary.
+
+    The digest goes under the same key as in a PNG, continued under `-2`,
+    `-3`, ... when it is longer than one string some readers accept.
+    """
+    text = encode(d)
+    pieces = [text[i:i + PDF_PIECE] for i in range(0, len(text), PDF_PIECE)] or ['']
+    meta = {KEY: pieces[0]}
+    for n, piece in enumerate(pieces[1:], start=2):
+        meta[f'{KEY}-{n}'] = piece
+    return meta
+
+
+@contextlib.contextmanager
+def _quiet_pdf_metadata():
+    """matplotlib warns about a metadata key it does not know; ours is deliberate."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='Unknown infodict keyword')
+        yield
+
+
+_PDF_ENTRY = re.compile(rb'/' + KEY.encode() + rb'(?:-(\d+))?\s*\(([A-Za-z0-9+/=]*)\)')
+
+
+def pdf_digests(data):
+    """Every digest a PDF carries, in file order.
+
+    One for a figure file; one per figure for a document that embeds figure
+    files, since the LaTeX engines Quarto uses copy each figure's information
+    dictionary into the document. Reads the dictionaries as matplotlib writes
+    them, plain objects with literal strings; a file rewritten with object
+    streams by another tool hides them and reads as carrying nothing.
+    """
+    if not data.startswith(b'%PDF'):
+        raise ValueError('not a PDF')
+    groups = []
+    for n, piece in _PDF_ENTRY.findall(data):
+        if not n:
+            groups.append({1: piece.decode('ascii')})
+        elif groups:
+            groups[-1][int(n)] = piece.decode('ascii')
+        else:
+            raise ValueError('a continuation piece of a digest precedes its first piece')
+    out = []
+    for g in groups:
+        if set(g) != set(range(1, max(g) + 1)):
+            raise ValueError('a digest in this PDF is missing a piece')
+        out.append(decode(''.join(g[i] for i in sorted(g))))
+    return out
+
+
+def from_pdf(data):
+    """The digest a PDF carries, the first when it holds several, or None."""
+    found = pdf_digests(data)
+    return found[0] if found else None
+
+
+def from_image(data):
+    """The digest a PNG or PDF carries, by the file's own signature."""
+    if data.startswith(b'\x89PNG'):
+        return from_png(data)
+    if data.startswith(b'%PDF'):
+        return from_pdf(data)
+    raise ValueError('neither a PNG nor a PDF')
+
+
+def _wrap_formatter(registry, kind):
+    """Wrap the figure formatter in `registry` so its output carries the digest."""
+    from matplotlib.figure import Figure
+    try:
+        current = registry.lookup_by_type(Figure)
+    except KeyError:
+        return False
+    if getattr(current, '_plotsmith_digest', False):
+        return True
+    func = getattr(current, 'func', current)
+    keywords = dict(getattr(current, 'keywords', None) or {})
+
+    def with_digest(fig):
+        kw = dict(keywords)
+        meta = dict(kw.pop('metadata', None) or {})
+        d = describe(fig)
+        meta.update(pdf_metadata(d) if kind == 'pdf' else {KEY: encode(d)})
+        with _quiet_pdf_metadata():
+            return func(fig, metadata=meta, **kw)
+
+    with_digest._plotsmith_digest = True
+    registry.for_type(Figure, with_digest)
+    return True
+
+
 def install():
     """Make every figure a notebook kernel displays carry its digest.
 
-    Wraps the formatter that turns a figure into its PNG for display, adding
-    the digest to the image's metadata. Does nothing, and returns False,
-    outside IPython or under a backend other than the inline one. Resolves
-    the inline backend first when it is still pending: its configuration
-    selects the figure formatters, and would replace this wrapper if it ran
-    later, at the first figure.
+    Wraps the formatters that turn a figure into its PNG or PDF for display,
+    adding the digest to the image's metadata. Does nothing, and returns
+    False, outside IPython or under a backend other than the inline one.
+    Resolves the inline backend first when it is still pending: its
+    configuration selects the figure formatters, and would replace the
+    wrappers if it ran later, at the first figure.
     """
     try:
         import matplotlib_inline.backend_inline as inline
@@ -519,28 +619,15 @@ def install():
         backend = dict.__getitem__(mpl.rcParams, 'backend')
     if backend is not None and 'inline' not in str(backend):
         return False
-    from matplotlib.figure import Figure
     if getattr(inline.configure_inline_support, 'current_backend', 'unset') != 'inline':
         ip.enable_matplotlib('inline')
-    fmt = ip.display_formatter.formatters['image/png']
-    try:
-        current = fmt.lookup_by_type(Figure)
-    except KeyError:
-        raise RuntimeError('plotsmith.digest.install: no PNG formatter is registered '
-                           'for figures; is the inline backend active?') from None
-    if getattr(current, '_plotsmith_digest', False):
-        return True
-    func = getattr(current, 'func', current)
-    keywords = dict(getattr(current, 'keywords', None) or {})
-
-    def with_digest(fig):
-        kw = dict(keywords)
-        meta = dict(kw.pop('metadata', None) or {})
-        meta[KEY] = encode(describe(fig))
-        return func(fig, metadata=meta, **kw)
-
-    with_digest._plotsmith_digest = True
-    fmt.for_type(Figure, with_digest)
+    formatters = ip.display_formatter.formatters
+    done = [_wrap_formatter(formatters['image/png'], 'png'),
+            _wrap_formatter(formatters['application/pdf'], 'pdf')]
+    if not any(done):
+        warnings.warn('plotsmith.digest: figures are displayed as neither PNG nor PDF '
+                      '(fig-format svg?), so they will carry no digest', stacklevel=2)
+        return False
     return True
 
 
@@ -723,7 +810,7 @@ def _panel_md(p, k):
     return lines
 
 
-def markdown(d, label, caption=None, name=None, figure_caption=None):
+def markdown(d, label, caption=None, name=None, figure_caption=None, ext='png'):
     """A digest as markdown lines: the heading, then one block per panel."""
     lines = [f'### {label}' + (f'. {caption}' if caption else ''), '']
     if figure_caption and figure_caption != caption:
@@ -732,8 +819,10 @@ def markdown(d, label, caption=None, name=None, figure_caption=None):
         lines += [f'Figure title: {d["title"]}', '']
     for k, p in enumerate(d['panels']):
         lines += _panel_md(p, k)
-    if name:
-        lines += [f'Files: {name}.csv (every value), {name}.png (the image).', '']
+    if name and ext:
+        lines += [f'Files: {name}.csv (every value), {name}.{ext} (the image).', '']
+    elif name:
+        lines += [f'Files: {name}.csv (every value).', '']
     return lines
 
 
@@ -895,15 +984,24 @@ def _table_from_html(rows):
     return lines
 
 
-def _embedded_png(src):
-    """The bytes of a `data:image/png;base64,...` source, else None."""
+def _embedded_image(src):
+    """(extension, bytes) of an image embedded as a `data:` source: PNG or PDF, else None."""
     head, sep, body = src.partition(',')
-    if not sep or not head.startswith('data:image/png'):
+    if not sep:
+        return None
+    ext = ('png' if head.startswith('data:image/png')
+           else 'pdf' if head.startswith('data:application/pdf') else None)
+    if ext is None:
         return None
     try:
-        return base64.b64decode(body)
+        return ext, base64.b64decode(body)
     except (ValueError, TypeError):
         return None
+
+
+def _write_csv(path, d):
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerows([tuple('' if v is None else v for v in r) for r in csv_rows(d)])
 
 
 # --- locating things ----------------------------------------------------------
@@ -936,28 +1034,43 @@ def digest_dir(root, source, cache=CACHE_ROOT):
 
 # --- the extraction -----------------------------------------------------------
 
+def _clear(out):
+    """Empty a digest folder's files, keeping its subfolders (a PDF render's digest
+    lives in `pdf/` under the page's); refuse a folder this did not write."""
+    out = Path(out)
+    if out.exists():
+        files = [p for p in out.iterdir() if p.is_file()]
+        if files and not (out / 'manifest.json').exists():
+            raise FileExistsError(f'{out}: holds files and no manifest; refusing to clear it')
+        for p in files:
+            p.unlink()
+    out.mkdir(parents=True, exist_ok=True)
+
+
+def _stamp(src, root, output):
+    """(source path to print, its sha256, the output's render time)."""
+    rel = src.resolve().relative_to(Path(root).resolve()).as_posix() if root else src.name
+    sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    rendered = (datetime.fromtimestamp(Path(output).stat().st_mtime, tz=UTC)
+                .astimezone().strftime('%Y-%m-%d %H:%M'))
+    return rel, sha, rendered
+
+
 def extract(html, out, source=None, root=None):
     """Write a rendered page's outputs to `out`; return a one-line summary.
 
     `out` is emptied first, so a stale figure from an earlier render cannot
-    survive; a non-empty folder that holds no manifest is refused, since it
+    survive; a folder that holds files and no manifest is refused, since it
     is not one this wrote.
     """
     html, out = Path(html), Path(out)
     src = Path(source) if source else source_for(html)
-    if out.exists():
-        if any(out.iterdir()) and not (out / 'manifest.json').exists():
-            raise FileExistsError(f'{out}: not empty and not a digest folder; refusing to clear it')
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    _clear(out)
 
     page = _Page()
     page.feed(html.read_text(encoding='utf-8'))
     page.close()
-    rel = src.resolve().relative_to(Path(root).resolve()).as_posix() if root else src.name
-    sha = hashlib.sha256(src.read_bytes()).hexdigest()
-    rendered = (datetime.fromtimestamp(html.stat().st_mtime, tz=UTC)
-                .astimezone().strftime('%Y-%m-%d %H:%M'))
+    rel, sha, rendered = _stamp(src, root, html)
 
     lines = [f'# Outputs of {rel}', '']
     if page.title:
@@ -989,24 +1102,24 @@ def extract(html, out, source=None, root=None):
             captions = info['captions']
             caption = captions[0] if captions else None
             outer = captions[1] if len(captions) > 1 else None
-            png = _embedded_png(info['src'])
-            if png is None:
+            image = _embedded_image(info['src'])
+            if image is None:
                 lines += [f'### {label}' + (f'. {caption}' if caption else ''), '',
-                          'Image not embedded as a PNG; nothing digested.', '']
+                          'Image not embedded as a PNG or PDF; nothing digested.', '']
                 continue
-            (out / f'{name}.png').write_bytes(png)
-            d = from_png(png)
+            ext, data = image
+            (out / f'{name}.{ext}').write_bytes(data)
+            d = from_image(data)
             if d is None:
                 lines += [f'### {label}' + (f'. {caption}' if caption else ''), '',
                           (f'No digest in this image (the figure was made without '
-                           f'plotsmith.setup running); see {name}.png.'), '']
-                figures.append({'label': label, 'files': [f'{name}.png'], 'digest': False})
+                           f'plotsmith.setup running); see {name}.{ext}.'), '']
+                figures.append({'label': label, 'files': [f'{name}.{ext}'], 'digest': False})
                 continue
-            lines += markdown(d, label, caption, name, outer)
-            with open(out / f'{name}.csv', 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerows(
-                    [tuple('' if v is None else v for v in r) for r in csv_rows(d)])
-            figures.append({'label': label, 'files': [f'{name}.png', f'{name}.csv'], 'digest': True})
+            lines += markdown(d, label, caption, name, outer, ext)
+            _write_csv(out / f'{name}.csv', d)
+            figures.append({'label': label, 'files': [f'{name}.{ext}', f'{name}.csv'],
+                            'digest': True})
     (out / 'outputs.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
     manifest = {'source': rel, 'sha256': sha, 'html': str(html), 'rendered': rendered,
                 'written': datetime.now(tz=UTC).astimezone().isoformat(timespec='seconds'),
@@ -1015,8 +1128,38 @@ def extract(html, out, source=None, root=None):
     return ', '.join(f'{v} {k[:-1] if v == 1 and k.endswith("s") else k}' for k, v in counts.items())
 
 
+def extract_pdf(pdf, out, source=None, root=None):
+    """Write the figures a rendered PDF document carries to `out`; return a summary.
+
+    A PDF render yields its figures' digests and nothing else: captions,
+    tables and printed output come from the digest of the same document's
+    HTML render. The figures are numbered in document order.
+    """
+    pdf, out = Path(pdf), Path(out)
+    src = Path(source) if source else source_for(pdf)
+    _clear(out)
+    digests = pdf_digests(pdf.read_bytes())
+    rel, sha, rendered = _stamp(src, root, pdf)
+    lines = [f'# Figures of {rel}, from its PDF render', '',
+             (f'Rendered {rendered} from the source with sha256 {sha[:12]}. '
+              f'`render-digest check {rel}` says whether the source changed since.'),
+             ('A PDF render carries its figures and nothing else: their captions, the '
+              'tables and the printed output are in the digest of the HTML render of the '
+              'same document, one folder up.'), '']
+    for k, d in enumerate(digests, start=1):
+        name = f'figure-{k}'
+        lines += markdown(d, name, None, name, None, None)
+        _write_csv(out / f'{name}.csv', d)
+    (out / 'outputs.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
+    manifest = {'source': rel, 'sha256': sha, 'pdf': str(pdf), 'rendered': rendered,
+                'written': datetime.now(tz=UTC).astimezone().isoformat(timespec='seconds'),
+                'counts': {'figures': len(digests)}}
+    (out / 'manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
+    return f'{len(digests)} figure{"" if len(digests) == 1 else "s"} from the PDF'
+
+
 def post_render(cache=CACHE_ROOT):
-    """Quarto's post-render hook: digest every page this render produced."""
+    """Quarto's post-render hook: digest every page or PDF this render produced."""
     files = [f.strip() for f in os.environ.get('QUARTO_PROJECT_OUTPUT_FILES', '').splitlines()
              if f.strip()]
     if not files:
@@ -1024,20 +1167,30 @@ def post_render(cache=CACHE_ROOT):
                          'this runs as the post-render script of a Quarto project')
     root = Path.cwd()
     for f in files:
-        html = (root / f).resolve()
-        if html.suffix.lower() != '.html':
+        output = (root / f).resolve()
+        kind = output.suffix.lower()
+        if kind not in ('.html', '.pdf'):
             continue
-        src = source_for(html)
+        src = source_for(output)
         out = digest_dir(root, src, cache)
-        print(f'digest: {extract(html, out, src, root)} -> {out}')
+        if kind == '.html':
+            print(f'digest: {extract(output, out, src, root)} -> {out}')
+        else:
+            print(f'digest: {extract_pdf(output, out / "pdf", src, root)} -> {out / "pdf"}')
 
 
 def check(document, cache=CACHE_ROOT):
-    """0 when the digest matches the document, 1 when the source changed, 2 when there is none."""
+    """0 when the digest matches the document, 1 when the source changed, 2 when there is none.
+
+    Reads the page's digest, or the PDF render's when the document has only
+    been rendered to PDF.
+    """
     doc = Path(document).resolve()
     root = project_root(doc.parent)
     folder = digest_dir(root, doc, cache)
     manifest = folder / 'manifest.json'
+    if not manifest.exists() and (folder / 'pdf' / 'manifest.json').exists():
+        folder, manifest = folder / 'pdf', folder / 'pdf' / 'manifest.json'
     if not manifest.exists():
         print(f'no digest for {doc.name} at {folder}; render the document')
         return 2
@@ -1062,8 +1215,8 @@ def main(argv=None):
     e.add_argument('html', type=Path)
     e.add_argument('--source', type=Path, help='the document, when not the one file beside the page')
     e.add_argument('--out', type=Path, help='folder to write; default the cache location')
-    g = sub.add_parser('png', help='print the digest a PNG carries, as markdown')
-    g.add_argument('png', type=Path)
+    g = sub.add_parser('figure', help='print the digest a PNG or PDF carries, as markdown')
+    g.add_argument('images', type=Path, nargs='+')
     a = ap.parse_args(argv)
 
     if a.cmd == 'post-render':
@@ -1078,12 +1231,20 @@ def main(argv=None):
         root = project_root(src.parent)
         out = a.out or digest_dir(root, src)
         print(f'digest: {extract(a.html, out, src, root)} -> {out}')
-    elif a.cmd == 'png':
-        d = from_png(a.png.read_bytes())
-        if d is None:
-            print(f'{a.png}: no digest', file=sys.stderr)
-            return 1
-        print('\n'.join(markdown(d, a.png.stem)))
+    elif a.cmd == 'figure':
+        missing = 0
+        for image in a.images:
+            data = image.read_bytes()
+            found = pdf_digests(data) if data.startswith(b'%PDF') else [from_image(data)]
+            found = [d for d in found if d is not None]
+            if not found:
+                print(f'{image}: no digest', file=sys.stderr)
+                missing += 1
+                continue
+            for k, d in enumerate(found, start=1):
+                label = image.stem if len(found) == 1 else f'{image.stem}, figure {k}'
+                print('\n'.join(markdown(d, label)))
+        return 1 if missing else 0
     return 0
 
 

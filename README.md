@@ -107,11 +107,14 @@ A figure is a picture of data that a program cannot read back, and a
 document written for a human reader states its findings in prose without
 describing what each figure shows. So every figure a notebook kernel
 displays after `setup()` carries a *digest*, its plotted data as compressed
-JSON inside the PNG's metadata: per panel, the axis titles and kinds, each
-series with its label, colour and values (lines, markers, bars, scatters,
-bands, intervals, error bars), reference lines and shaded spans with their
-labels, named points and notes. The image is unchanged and nothing else
-appears in the cell.
+JSON inside the image's metadata, a PNG's text chunk or a PDF's document
+information: per panel, the axis titles and kinds, each series with its
+label, colour and values (lines, markers, bars, scatters, bands, intervals,
+error bars), reference lines and shaded spans with their labels, named
+points and notes. The image is unchanged and nothing else appears in the
+cell. The PDFs `save` writes for a paper carry the same digest, so
+`render-digest figure results/figures/fig1.pdf` reads a paper figure back
+without the document that made it; `figure` takes PNGs and PDFs alike.
 
 After a Quarto render, the digests come back out of the page along with
 its tables and printed output. In a project's `_quarto.yml`:
@@ -129,7 +132,10 @@ and one PNG per figure, and a manifest with the render time and a hash of
 the source. `render-digest where <document>` prints the folder;
 `render-digest check <document>` exits 1 when the source changed since the
 render, so a reader knows to render again first. The folder lives outside
-the repository and outside Dropbox.
+the repository and outside Dropbox. A document rendered to PDF yields its
+figures, and only them, under `pdf/` in the same folder: the LaTeX engine
+copies each figure file's digest into the document, and `render-digest
+figure` on any such PDF prints them all.
 
 Limits, each stated in the digest itself: series longer than 5,000 points
 are thinned evenly; large image grids are given by shape and range only;
