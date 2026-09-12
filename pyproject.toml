@@ -1,7 +1,7 @@
 [project]
 name = "plotsmith"
-version = "0.4.1"
-description = "Matplotlib figure style following Kieran Healy's practices: direct labels with collision-avoiding placement, a measurable overlap check, and per-target export"
+version = "0.5.0"
+description = "Matplotlib figure style following Kieran Healy's practices: direct labels with collision-avoiding placement, a measurable overlap check, per-target export, and a machine-readable digest of every figure's data"
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib>=3.9",
@@ -11,9 +11,12 @@ dependencies = [
 
 [project.scripts]
 fig-check = "plotsmith.check:main"
+render-digest = "plotsmith.digest:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# IPython and the inline backend are the notebook side the digest hooks into;
+# the library imports them only when running under a kernel.
+dev = ["pytest>=8", "ipython>=8", "matplotlib-inline>=0.1.7"]
 
 [build-system]
 requires = ["hatchling"]

@@ -5,9 +5,14 @@ dependency (`uv add git+https://github.com/fqueiro/plotsmith`). README.md
 holds the user-facing rationale; this file holds working rules.
 
 - The library is `src/plotsmith/__init__.py` (style, labelling engine, plot
-  helpers, export) plus `src/plotsmith/check.py` (the `fig-check` CLI).
-  Single module by design: the placement machinery is tightly coupled and
-  the public API is small.
+  helpers, export), `src/plotsmith/check.py` (the `fig-check` CLI) and
+  `src/plotsmith/digest.py` (the figure digest and the `render-digest` CLI).
+  The style module is one file by design: the placement machinery is
+  tightly coupled and the public API is small.
+- The digest is a contract with the projects' render step (`digest.py`'s
+  docstring has the mechanism): a new artist type or helper mark that
+  `describe` learns to read gets a test that draws it and checks the values
+  and labels that come back, and `markdown` and `csv_rows` learn to write it.
 - Run `uv run pytest` before committing; every commit may be pinned by a
   downstream project, so a broken commit can end up in a lockfile.
 - Downstream projects pin commits in their `uv.lock`. Changing defaults

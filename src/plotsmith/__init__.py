@@ -58,6 +58,12 @@ because it depends on how big the panel turned out to be, so it runs from a
 draw callback and recomputes on every draw rather than being decided when the
 label is created. `collisions` measures a drawn figure for what is left; it
 is the check to run on a figure rather than squinting at it.
+
+A figure displayed in a notebook also carries a digest of its plotted data
+inside its PNG (`digest`), so a reader that cannot see the image, a program
+or a language model working from the rendered document, can still read the
+figure: its series, values, rules and annotations, and after a render the
+document's tables and printed output beside them.
 """
 
 import pickle
@@ -143,7 +149,17 @@ def setup(base=BASE_SIZE):
     the two sizes move together and nothing can drift apart element by
     element. Scale a whole document (a slide deck, a poster) by changing
     `base`, never by touching individual elements.
+
+    In a notebook kernel this also arms the figure digest (`digest.install`):
+    every figure the kernel displays from here on carries its plotted data
+    inside its PNG. It runs before the style because resolving the inline
+    backend may apply the kernel's own rc settings, and the style below has
+    the last word.
     """
+    # Imported here, not at the top: `python -m plotsmith.digest` would
+    # otherwise run a module the package had already imported.
+    from . import digest
+    digest.install()
     text = base - 0.5
     plt.rcParams.update({
         # Sizing. 110 dpi renders crisply in the HTML documents without

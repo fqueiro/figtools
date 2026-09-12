@@ -40,6 +40,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from plotsmith import collisions
+from plotsmith.digest import KEY, describe, encode
 
 CHUNK = re.compile(r'^```\{python\}\s*$(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 FRONT = re.compile(r'\A\s*---\s*\n(.*?)\n---\s*$', re.DOTALL | re.MULTILINE)
@@ -224,7 +225,10 @@ def check(doc, figs=None):
                 warnings.simplefilter('ignore')
                 hits = collisions(fig)
                 if figs is not None:
-                    fig.savefig(figs / f'{doc.stem}_{n}.png', dpi=110)
+                    # The same digest a rendered page's image carries, so
+                    # `render-digest png` reads these too.
+                    fig.savefig(figs / f'{doc.stem}_{n}.png', dpi=110,
+                                metadata={KEY: encode(describe(fig))})
             found += [f'  fig {n} panel {p}  {kind:12} {what}'
                       for p, kind, what in hits]
             plt.close(fig)

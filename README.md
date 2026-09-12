@@ -62,6 +62,13 @@ rendered at the physical size of its destination, so its type lands on the
 page at the exact point size `setup` chose. Scaling at `\includegraphics`
 time is what un-sizes fonts.
 
+## Tests
+
+```
+uv sync
+uv run pytest
+```
+
 Typography is one knob: `setup(base=...)` puts titles and axis labels at the
 base size and every other piece of text (ticks, line labels, key entries,
 annotations) half a point below, so elements cannot drift apart and a bigger
@@ -94,9 +101,40 @@ document, or a folder with none, is an error rather than a clean exit. The
 library itself has no document-format dependence, so plain scripts check
 their own figures inline with `assert not ps.collisions(fig)`.
 
-## Tests
+## Digest
 
+A figure is a picture of data that a program cannot read back, and a
+document written for a human reader states its findings in prose without
+describing what each figure shows. So every figure a notebook kernel
+displays after `setup()` carries a *digest*, its plotted data as compressed
+JSON inside the PNG's metadata: per panel, the axis titles and kinds, each
+series with its label, colour and values (lines, markers, bars, scatters,
+bands, intervals, error bars), reference lines and shaded spans with their
+labels, named points and notes. The image is unchanged and nothing else
+appears in the cell.
+
+After a Quarto render, the digests come back out of the page along with
+its tables and printed output. In a project's `_quarto.yml`:
+
+```yaml
+project:
+  post-render: python -m plotsmith.digest post-render
 ```
-uv sync
-uv run pytest
-```
+
+writes, for each rendered document, a folder under
+`~/.local/share/render-digests/<project>/<document path>/` holding
+`outputs.md` (headings, each figure's values as tables, the page's tables
+as markdown, printed output as code blocks, in document order), one CSV
+and one PNG per figure, and a manifest with the render time and a hash of
+the source. `render-digest where <document>` prints the folder;
+`render-digest check <document>` exits 1 when the source changed since the
+render, so a reader knows to render again first. The folder lives outside
+the repository and outside Dropbox.
+
+Limits, each stated in the digest itself: series longer than 5,000 points
+are thinned evenly; large image grids are given by shape and range only;
+colour or size that varies point by point is not decoded. A markdown table
+over about 600 cells is thinned to its first, last and extreme rows and
+says so; the CSV keeps every row. Calling `set_matplotlib_formats` after
+`setup()` replaces the wrapped formatter and drops the digest; call `setup()`
+again after it.
