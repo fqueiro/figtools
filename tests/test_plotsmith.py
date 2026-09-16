@@ -765,3 +765,84 @@ def test_save_refuses_a_missing_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
         ps.save(fig, tmp_path / 'nope' / 'x')
     plt.close(fig)
+
+
+# --- whole-number ticks -------------------------------------------------------
+
+# The interval and tick count of the figure that prompted the rule: sixteen
+# years of employment shares in one panel of a pair, whose direct labels
+# ("new regulation", country names) leave the axis room for seven ticks.
+YEARS, NBINS = (2007.25, 2023.18), 7
+
+
+def _year_axes(nbins=NBINS):
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(2008, 2024), np.linspace(20, 45, 16), label='Portugal')
+    ax.set_xlim(*YEARS)
+    ax.xaxis.get_major_locator().set_params(nbins=nbins)
+    return fig, ax
+
+
+def test_the_default_locator_would_put_half_years_on_this_axis():
+    """The companion to the tests below: a rule that never fires would pass
+    a figure full of 2007.5s."""
+    bare = matplotlib.ticker.AutoLocator()
+    bare.set_params(nbins=NBINS)
+    ticks = bare.tick_values(*YEARS)
+    assert not np.array_equal(ticks, np.round(ticks))
+
+
+def test_whole_number_data_gets_whole_number_ticks():
+    fig, ax = _year_axes()
+    ticks = ax.get_xticks()
+    assert np.array_equal(ticks, np.round(ticks)), ticks
+    plt.close(fig)
+
+
+def test_a_reference_rule_at_a_half_year_is_furniture_not_data():
+    """The rule marking a break between two regimes sits at 2020.5; it is
+    not a reason to label the axis in halves."""
+    fig, ax = _year_axes()
+    ps.refline(ax, 2020.5, axis='x', label='new regulation')
+    ticks = ax.get_xticks()
+    assert np.array_equal(ticks, np.round(ticks)), ticks
+    plt.close(fig)
+
+
+def test_whole_numbers_plotted_as_points_count_too():
+    """Scatter and dot-plot marks live in collections, not in `ax.lines`."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.scatter(np.arange(2008, 2024), np.linspace(20, 45, 16))
+    ax.set_xlim(*YEARS)
+    ax.xaxis.get_major_locator().set_params(nbins=NBINS)
+    ticks = ax.get_xticks()
+    assert np.array_equal(ticks, np.round(ticks)), ticks
+    plt.close(fig)
+
+
+def test_fractional_data_keeps_its_fractional_ticks():
+    """The rule is about ticks the data cannot occupy, not about round
+    numbers: an axis of elasticities still gets its halves."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.plot(np.linspace(2007.25, 2023.18, 16), np.linspace(20, 45, 16))
+    ax.set_xlim(*YEARS)
+    ax.xaxis.get_major_locator().set_params(nbins=NBINS)
+    ticks = ax.get_xticks()
+    assert not np.array_equal(ticks, np.round(ticks)), ticks
+    plt.close(fig)
+
+
+def test_an_axes_with_nothing_readable_is_left_alone():
+    """Bars are patches, which `_axis_data` does not read; with nothing to
+    judge by the default ticks stand."""
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.bar(np.arange(2008, 2024), np.linspace(20, 45, 16))
+    ax.set_xlim(*YEARS)
+    ax.xaxis.get_major_locator().set_params(nbins=NBINS)
+    ticks = ax.get_xticks()
+    assert not np.array_equal(ticks, np.round(ticks)), ticks
+    plt.close(fig)

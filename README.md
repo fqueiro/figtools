@@ -43,6 +43,14 @@ width is broken at spaces into two or three balanced lines, decided per
 output size; a label you break by hand (with a newline) is kept as
 written, and `label_lines(ax, wrap=None)` turns wrapping off.
 
+Ticks name values the data can take: where everything plotted against an
+axis is a whole number, so are its ticks. Matplotlib's default steps
+include 2.5, which labels a sixteen-year axis 2007.5, 2010.0, 2012.5, and
+whether a panel lands on that step depends on how much margin its direct
+labels take, so one longer country name can flip it. An axis of genuinely
+fractional data keeps its halves, and a reference rule at 2020.5 is
+furniture rather than a value the data occupies.
+
 Two house rules the helpers assume. The caption names the quantity, its
 unit and its sign convention, and the reference rule is named on the line
 (`refline(ax, 1, 'parity')`), so the axes carry no title that repeats

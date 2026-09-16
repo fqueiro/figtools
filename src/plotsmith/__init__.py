@@ -23,6 +23,9 @@ The choices follow Kieran Healy's *Data Visualization* practices:
   * Gridlines only on the axis carrying the measurement, drawn light and
     behind the data, so they support reading values without competing; they
     stop where the data stops instead of running on under the labels.
+  * Ticks that name values the data can take: where everything plotted
+    against an axis is a whole number, so are its ticks, since matplotlib's
+    default steps would otherwise label a year axis 2007.5, 2010.0, 2012.5.
   * No frame around the data at all: no spines, no tick marks. The grid and
     the floating tick labels carry every reference the reader needs; axis
     lines are frame ink.
@@ -141,6 +144,94 @@ def _text_size():
 PALETTE_LONG = [*PALETTE, '#33BBEE', '#EE3377', '#000000']
 
 
+def _axis_data(axis):
+    """Every value plotted against `axis`, artist by artist.
+
+    Only artists drawn in data coordinates count. The rules from
+    `axhline`/`axvline` are drawn in a blended transform (see `_data_lines`)
+    and shaded bands are patches, so furniture at 2020.5 is not evidence
+    that the axis carries halves. Lines and collections are what this reads;
+    an axes built from anything else (bars, histograms) returns nothing and
+    is left alone.
+    """
+    ax = axis.axes
+    i = 0 if axis.axis_name == 'x' else 1
+    out = []
+    for ln in ax.lines:
+        if ln.get_transform() is ax.transData:
+            out.append(ln.get_xdata() if i == 0 else ln.get_ydata())
+    for coll in ax.collections:
+        if coll.get_offset_transform() is ax.transData:
+            off = np.ma.getdata(coll.get_offsets())
+            if np.ndim(off) == 2 and len(off):
+                out.append(off[:, i])
+        if coll.get_transform() is ax.transData:
+            out += [p.vertices[:, i] for p in coll.get_paths() if len(p.vertices)]
+    return out
+
+
+def _all_whole(arrays):
+    """True when every value in `arrays` is a whole number, and there is at
+    least one to judge by."""
+    seen = False
+    for a in arrays:
+        a = np.asarray(np.ma.getdata(a), float).ravel()
+        a = a[np.isfinite(a)]
+        if not a.size:
+            continue
+        if not np.array_equal(a, np.round(a)):
+            return False
+        seen = True
+    return seen
+
+
+class _WholeNumberLocator(mpl.ticker.AutoLocator):
+    """Matplotlib's default tick locator, refusing fractional ticks on
+    whole-number data.
+
+    The default tick steps include 2.5, so a sixteen-year axis in a panel
+    with room for seven ticks is labelled 2007.5, 2010.0, 2012.5: positions
+    no observation can occupy. Which side of that a figure falls on is
+    decided by how much margin the direct labels take, so one longer country
+    name flips a panel into decimals. Where every value plotted against the
+    axis is a whole number, so are its ticks: years, ages, counts, quintiles.
+
+    The data are read only when the default ticks came out fractional, which
+    is the rare case, so a figure that was never at risk pays nothing.
+    """
+
+    def tick_values(self, vmin, vmax):
+        ticks = super().tick_values(vmin, vmax)
+        if np.array_equal(ticks, np.round(ticks)):
+            return ticks
+        axis = getattr(self, 'axis', None)
+        if axis is None or not _all_whole(_axis_data(axis)):
+            return ticks
+        self.set_params(integer=True)
+        try:
+            return super().tick_values(vmin, vmax)
+        finally:
+            self.set_params(integer=False)
+
+
+class _LinearScale(mpl.scale.LinearScale):
+    """The linear scale with `_WholeNumberLocator` for its default ticks.
+
+    Registered under matplotlib's own name for the scale, which is what
+    carries the rule to every axes a document draws, whether it came from
+    `panels`, `plt.subplots` or a library plotting into an axes of its own,
+    without anything having to ask for it. An axis given fixed ticks (a
+    categorical axis) or a unit converter (dates) replaces the locator and
+    is unaffected.
+    """
+
+    name = 'linear'
+
+    def set_default_locators_and_formatters(self, axis):
+        super().set_default_locators_and_formatters(axis)
+        axis.set_major_locator(_WholeNumberLocator())
+
+
 def setup(base=BASE_SIZE):
     """Apply the figure style. Call once per document.
 
@@ -161,6 +252,10 @@ def setup(base=BASE_SIZE):
     # otherwise run a module the package had already imported.
     from . import digest
     digest.install()
+    # Whole-number ticks on whole-number data (see `_WholeNumberLocator`).
+    # There is no rcParam for the default locator, so the rule travels on
+    # the scale every axes is created with.
+    mpl.scale.register_scale(_LinearScale)
     text = base - 0.5
     plt.rcParams.update({
         # Sizing. 110 dpi renders crisply in the HTML documents without
