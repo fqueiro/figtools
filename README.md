@@ -51,14 +51,22 @@ labels take, so one longer country name can flip it. An axis of genuinely
 fractional data keeps its halves, and a reference rule at 2020.5 is
 furniture rather than a value the data occupies.
 
-Two house rules the helpers assume. The caption names the quantity, its
+Three house rules the helpers assume. The caption names the quantity, its
 unit and its sign convention, and the reference rule is named on the line
 (`refline(ax, 1, 'parity')`), so the axes carry no title that repeats
 them; a title stays only where the ticks alone would mislead, as on a
 scatter whose two axes are different variables. Limits are left to
 autoscale, which includes the reference rule, and a named rule at the top
 of the data takes the headroom its label needs; a limit set by hand states
-its reason in a comment.
+its reason in a comment. And **a captioned figure cell produces the figure
+and nothing else**: in a Quarto or Jupyter document the cell's last
+statement is displayed if it is an expression, so a cell ending on a bare
+`ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` shows that call's
+return value as a second output, and Quarto then numbers the pair as
+subfigures (a) and (b), giving the caption to the repr and leaving the
+figure captionless. End such a cell with `plt.show()`, which returns
+nothing, and keep tables in cells of their own. `digest.py`'s docstring
+states the same rule from the digest's side.
 
 `save` writes `fig1.pdf` at paper width (5.9 in) and
 `fig1_slides.pdf` at slide width (4.1 in), re-solving label placement

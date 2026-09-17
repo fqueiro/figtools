@@ -1091,6 +1091,12 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     direct label may sit across but a key block may not. The line step is
     measured from the drawn entries, so it tracks the font and panel size;
     `lineheight` (axes fraction per entry) overrides it.
+
+    Returns the annotations it placed. That makes it a trap as the last
+    statement of a captioned figure cell, where the displayed list of Text
+    objects becomes a second output and Quarto renumbers the figure as
+    subfigures (a) and (b); end the cell with `plt.show()`. README.md has
+    the rule.
     """
     fontsize = _text_size() if fontsize is None else fontsize
     auto = loc == 'auto'
@@ -1269,6 +1275,22 @@ def dotplot(ax, labels, values, ci=None, color=None, baseline=0.0, sort=True,
     through the dot in the dot's own colour and the stems are dropped, since
     the row is already carrying a line. Pair it with `refline(ax, 0)` when
     zero is the hypothesis on trial.
+
+    `ci` means an interval around the value the dot marks, so the dot
+    belongs inside it. Two *alternative measurements* of the same quantity,
+    a result at each of two prices or under each of two definitions, are not
+    that: passing them as `ci` with the dot on one of them puts the mark on
+    an endpoint of its own interval, and on whichever endpoint happens to be
+    smaller, so the encoding flips between rows and reads as a plotting bug.
+    Draw those as a dumbbell instead, one mark per measurement, named apart
+    by fill rather than by position: `dotplot(..., ci=(minimum, maximum))`
+    for the connector, the baseline mark on top of it, and the alternative
+    as a hollow marker (`facecolor='white'`, `edgecolor=` the row's colour).
+    The pair then reads the same way whichever value is larger, and
+    collapses to one mark where the two measurements agree.
+
+    Returns the axes, so a cell that ends on a bare call to this displays
+    it; see the cell rule in README.md.
     """
     labels, values = list(labels), np.asarray(values, float)
     # `color` may be one colour for every row or one per row; a per-row list
