@@ -65,8 +65,11 @@ statement is displayed if it is an expression, so a cell ending on a bare
 return value as a second output, and Quarto then numbers the pair as
 subfigures (a) and (b), giving the caption to the repr and leaving the
 figure captionless. End such a cell with `plt.show()`, which returns
-nothing, and keep tables in cells of their own. `digest.py`'s docstring
-states the same rule from the digest's side.
+nothing, and keep tables in cells of their own. The render enforces this:
+`render-digest post-render` fails and names any figure whose caption
+another output took over. It knows the difference because a deliberate
+multi-panel figure gives every subfloat an image, while this bug puts a
+repr or a table in one of them.
 
 `save` writes `fig1.pdf` at paper width (5.9 in) and
 `fig1_slides.pdf` at slide width (4.1 in), re-solving label placement

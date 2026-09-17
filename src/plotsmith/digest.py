@@ -873,6 +873,14 @@ class _Page(HTMLParser):
     table of contents are skipped. An image remembers the nearest enclosing
     element whose id starts with `fig-` (Quarto's figure label) and the
     caption of each figure element that encloses it.
+
+    `split` names the figures whose caption a non-figure output took over.
+    Quarto turns a captioned cell holding more than one output into
+    subfigures and numbers them (a), (b), ..., which is what a multi-panel
+    figure wants and is wrong when the extra output is a repr or a table
+    that happened to share the cell: the caption goes to whichever came
+    first, and the figure is left without one. The signature is a subfloat
+    holding no image, so a deliberate set of panels never trips it.
     """
 
     def __init__(self):
@@ -885,10 +893,26 @@ class _Page(HTMLParser):
         self._row = None
         self._cell = None
         self._figures = []
+        self._floats = []      # one frame per open <figure>, for `split`
+        self.split = []
         self._in_main = False
 
     def _inside(self, cls):
         return any(cls in c for _, _, c in self.stack)
+
+    def _fig_label(self):
+        """The outermost enclosing Quarto figure label, or None.
+
+        The outermost one is what the caption belongs to; a subfloat
+        carries the same label with an index appended.
+        """
+        return next((x[1].get('id') for x in self.stack
+                     if (x[1].get('id') or '').startswith('fig-')), None)
+
+    def _output(self, kind):
+        """Count one output against the innermost open <figure>."""
+        if self._floats:
+            self._floats[-1][kind] += 1
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -918,8 +942,12 @@ class _Page(HTMLParser):
                                          'captions': []}))
             for f in self._figures:
                 f.append(len(self.items) - 1)
+            self._output('image')
         elif tag == 'figure':
             self._figures.append([])
+            self._floats.append({'sub': 'quarto-subfloat-fig' in cls,
+                                 'label': self._fig_label(),
+                                 'image': 0, 'other': 0})
         elif tag == 'figcaption':
             self._text = ('caption', 0, [])
 
@@ -940,11 +968,16 @@ class _Page(HTMLParser):
                 self.items.append(('heading', level, ' '.join(text.split())))
             elif kind == 'text':
                 self.items.append(('text', text.strip('\n')))
+                self._output('other')
             elif kind == 'caption' and self._figures:
                 for idx in self._figures[-1]:
                     self.items[idx][1]['captions'].append(' '.join(text.split()))
         if tag == 'figure' and self._figures:
             self._figures.pop()
+            if self._floats:
+                f = self._floats.pop()
+                if f['sub'] and not f['image'] and f['other'] and f['label']:
+                    self.split.append(f['label'])
         elif tag in ('td', 'th') and self._cell is not None and self._row is not None:
             is_header, buf = self._cell
             self._row.append((is_header, ' '.join(''.join(buf).split())))
@@ -955,6 +988,7 @@ class _Page(HTMLParser):
         elif tag == 'table' and self._table is not None:
             if self._table:
                 self.items.append(('table', self._table))
+                self._output('other')
             self._table = None
 
     def handle_data(self, data):
@@ -1057,11 +1091,13 @@ def _stamp(src, root, output):
 
 
 def extract(html, out, source=None, root=None):
-    """Write a rendered page's outputs to `out`; return a one-line summary.
+    """Write a rendered page's outputs to `out`; return (summary, split).
 
     `out` is emptied first, so a stale figure from an earlier render cannot
     survive; a folder that holds files and no manifest is refused, since it
-    is not one this wrote.
+    is not one this wrote. `split` holds the labels of the figures whose
+    caption another output in the same cell took over (`_Page`); a caller
+    driving a render is expected to fail on it, not note it.
     """
     html, out = Path(html), Path(out)
     src = Path(source) if source else source_for(html)
@@ -1123,9 +1159,11 @@ def extract(html, out, source=None, root=None):
     (out / 'outputs.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
     manifest = {'source': rel, 'sha256': sha, 'html': str(html), 'rendered': rendered,
                 'written': datetime.now(tz=UTC).astimezone().isoformat(timespec='seconds'),
-                'counts': counts, 'figures': figures}
+                'counts': counts, 'figures': figures, 'split': page.split}
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
-    return ', '.join(f'{v} {k[:-1] if v == 1 and k.endswith("s") else k}' for k, v in counts.items())
+    summary = ', '.join(f'{v} {k[:-1] if v == 1 and k.endswith("s") else k}'
+                        for k, v in counts.items())
+    return summary, page.split
 
 
 def extract_pdf(pdf, out, source=None, root=None):
@@ -1158,14 +1196,28 @@ def extract_pdf(pdf, out, source=None, root=None):
     return f'{len(digests)} figure{"" if len(digests) == 1 else "s"} from the PDF'
 
 
+SPLIT_ADVICE = (
+    'A captioned figure cell produces the figure and nothing else. The cell\'s '
+    'last statement is displayed when it is an expression, so end it with '
+    'plt.show() rather than a bare ps.key(...), ps.dotplot(...) or '
+    'ax.set_xlabel(...), and give a table a cell of its own. README.md carries '
+    'the rule beside the other house rules.')
+
+
 def post_render(cache=CACHE_ROOT):
-    """Quarto's post-render hook: digest every page or PDF this render produced."""
+    """Quarto's post-render hook: digest every page or PDF this render produced.
+
+    Fails the render when a page holds a figure whose caption another output
+    in the same cell took over: the page is written and digested first, so
+    the message names what to fix and the evidence is on disk.
+    """
     files = [f.strip() for f in os.environ.get('QUARTO_PROJECT_OUTPUT_FILES', '').splitlines()
              if f.strip()]
     if not files:
         raise SystemExit('render-digest post-render: QUARTO_PROJECT_OUTPUT_FILES is empty; '
                          'this runs as the post-render script of a Quarto project')
     root = Path.cwd()
+    lost = {}
     for f in files:
         output = (root / f).resolve()
         kind = output.suffix.lower()
@@ -1174,9 +1226,17 @@ def post_render(cache=CACHE_ROOT):
         src = source_for(output)
         out = digest_dir(root, src, cache)
         if kind == '.html':
-            print(f'digest: {extract(output, out, src, root)} -> {out}')
+            summary, split = extract(output, out, src, root)
+            print(f'digest: {summary} -> {out}')
+            if split:
+                lost[f] = split
         else:
             print(f'digest: {extract_pdf(output, out / "pdf", src, root)} -> {out / "pdf"}')
+    if lost:
+        named = '; '.join(f'{f}: {", ".join(labs)}' for f, labs in lost.items())
+        raise SystemExit(f'render-digest post-render: {named} lost its caption '
+                         f'to another output of the same cell, and Quarto '
+                         f'numbered the pair as subfigures. {SPLIT_ADVICE}')
 
 
 def check(document, cache=CACHE_ROOT):
@@ -1230,7 +1290,12 @@ def main(argv=None):
         src = a.source or source_for(a.html)
         root = project_root(src.parent)
         out = a.out or digest_dir(root, src)
-        print(f'digest: {extract(a.html, out, src, root)} -> {out}')
+        summary, split = extract(a.html, out, src, root)
+        print(f'digest: {summary} -> {out}')
+        if split:
+            print(f'{", ".join(split)} lost its caption to another output of '
+                  f'the same cell. {SPLIT_ADVICE}', file=sys.stderr)
+            return 1
     elif a.cmd == 'figure':
         missing = 0
         for image in a.images:

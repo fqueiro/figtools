@@ -369,8 +369,9 @@ def test_extract_writes_digests_tables_and_text_from_a_rendered_page(tmp_path):
     html = tmp_path / 'doc.html'
     html.write_text(PAGE.format(png=png, plain=plain), encoding='utf-8')
     out = tmp_path / 'cache' / 'proj' / 'doc'
-    summary = digest.extract(html, out, source=src, root=tmp_path)
+    summary, split = digest.extract(html, out, source=src, root=tmp_path)
     assert summary == '2 figures, 1 table, 1 text block'
+    assert split == []   # the text block here is its own output, not a subfloat
     text = (out / 'outputs.md').read_text(encoding='utf-8')
     assert text.startswith('# Outputs of doc.qmd\n\nTitle: The title\n')
     assert '## First section' in text and 'hello 42' in text
@@ -414,3 +415,65 @@ def test_check_tells_fresh_from_stale_from_missing(tmp_path, capsys):
     src.write_text('---\ntitle: T2\n---\n', encoding='utf-8')
     assert digest.check(src, cache=cache) == 1
     assert 'stale' in capsys.readouterr().out
+
+def _page(subfloats):
+    """A Quarto figure float whose subfloats hold the given bodies."""
+    inner = ''.join(
+        f'<div id="fig-x-{k}" class="cell-output cell-output-display '
+        f'quarto-float">'
+        f'<figure class="quarto-float quarto-subfloat-fig figure">{b}'
+        f'<figcaption>({chr(96 + k)}) sub</figcaption></figure></div>'
+        for k, b in enumerate(subfloats, start=1))
+    return ('<main><div id="fig-x" class="cell quarto-float">'
+            '<figure class="quarto-float quarto-float-fig figure">'
+            f'{inner}<figcaption>outer caption</figcaption>'
+            '</figure></div></main>')
+
+
+IMG = '<img src="data:image/png;base64,zz">'
+
+
+def test_a_figure_that_lost_its_caption_to_another_output_is_named(tmp_path):
+    # The bug: a repr or a table shares the captioned cell, so Quarto makes
+    # it a subfloat and the caption lands on it instead of on the figure.
+    for body in ('<pre><code>[Text(0, 0, \'a\')]</code></pre>',
+                 '<table><tr><td>1</td></tr></table>'):
+        page = digest._Page()
+        page.feed(_page([body, IMG]))
+        page.close()
+        assert page.split == ['fig-x'], body
+
+    # A deliberate multi-panel figure: every subfloat is an image, so the
+    # guard stays quiet however many there are.
+    for n in (2, 3):
+        page = digest._Page()
+        page.feed(_page([IMG] * n))
+        page.close()
+        assert page.split == []
+
+    # Nor does it fire on a table or printed output outside a figure.
+    page = digest._Page()
+    page.feed('<main><div class="cell-output cell-output-display">'
+              '<pre><code>text</code></pre></div>'
+              '<div class="cell-output"><table><tr><td>1</td></tr></table>'
+              '</div></main>')
+    page.close()
+    assert page.split == []
+
+
+def test_post_render_fails_on_a_figure_that_lost_its_caption(tmp_path,
+                                                             monkeypatch):
+    (tmp_path / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    src = tmp_path / 'doc.qmd'
+    src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    html = tmp_path / 'doc.html'
+    html.write_text(_page(['<pre><code>[Text(0, 0, \'a\')]</code></pre>',
+                           IMG]), encoding='utf-8')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('QUARTO_PROJECT_OUTPUT_FILES', 'doc.html')
+    with pytest.raises(SystemExit) as e:
+        digest.post_render(cache=tmp_path / 'cache')
+    assert 'fig-x' in str(e.value) and 'plt.show()' in str(e.value)
+    # the page is digested before the failure, so the evidence is on disk
+    out = digest.digest_dir(tmp_path, src, tmp_path / 'cache')
+    assert json.loads((out / 'manifest.json').read_text())['split'] == ['fig-x']
