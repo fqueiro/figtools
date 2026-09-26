@@ -79,6 +79,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.transforms import Bbox
+from numpy.typing import ArrayLike
 
 __all__ = [
     'BASE_SIZE',
@@ -367,7 +368,7 @@ def _data_lines(ax):
             and not getattr(ln, '_fs_guide', False)]
 
 
-def guide(ax, x, y, lw=1.0, **kw):
+def guide(ax, x: ArrayLike, y: ArrayLike, lw=1.0, **kw):
     """Draw a background reference curve: a fit, a 45-degree line, a bound.
 
     Grey and behind the series, because it summarises or frames the data
@@ -977,8 +978,8 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
     return moved
 
 
-def label_points(ax, x, y, labels, fontsize=None, color='black', offset=5,
-                 avoid=()):
+def label_points(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
+                 fontsize=None, color='black', offset=5, avoid=()):
     """Label scattered points, each moved clear of the others.
 
     These labels default two points below the running text size, the one
@@ -1259,8 +1260,9 @@ def shade(ax, x0, x1, label=None, where='auto', fontsize=None, **kw):
                            order=np.arange(0.97, 0.83, -0.035), grow=True))
 
 
-def dotplot(ax, labels, values, ci=None, color=None, baseline=0.0, sort=True,
-            stem=True, markersize=5.5):
+def dotplot(ax, labels: ArrayLike, values: ArrayLike,
+            ci: tuple[ArrayLike, ArrayLike] | None = None, color=None,
+            baseline=0.0, sort=True, stem=True, markersize=5.5):
     """Cleveland dot plot: one row per category, position encodes value.
 
     Prefer this to a horizontal bar chart when the quantity is a difference or
@@ -1414,7 +1416,8 @@ def collisions(fig, pad=0.004):
     return found
 
 
-def band(ax, x, lo, hi, color=None, alpha=0.18):
+def band(ax, x: ArrayLike, lo: ArrayLike, hi: ArrayLike, color=None,
+         alpha=0.18):
     """Confidence band around the series just drawn.
 
     Call straight after plotting the series and the band inherits its
@@ -1436,8 +1439,9 @@ def band(ax, x, lo, hi, color=None, alpha=0.18):
                            zorder=1.5)
 
 
-def pointrange(ax, x, y, lo, hi, color=None, label=None, marker='o',
-               markersize=4.5, connect=False):
+def pointrange(ax, x: ArrayLike, y: ArrayLike, lo: ArrayLike, hi: ArrayLike,
+               color=None, label=None, marker='o', markersize=4.5,
+               connect=False):
     """Point estimates with their intervals: coefficient profiles over a
     running variable, event studies.
 
@@ -1480,8 +1484,8 @@ def _ols_line(x, y):
     return b, r2
 
 
-def label_scatter(ax, x, y, labels, color=None, fontsize=None, fit=False,
-                  note=False):
+def label_scatter(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
+                  color=None, fontsize=None, fit=False, note=False):
     """Scatter in which the name is the mark.
 
     For a country- or industry-level scatter the reader wants to know which
@@ -1526,7 +1530,9 @@ def label_scatter(ax, x, y, labels, color=None, fontsize=None, fit=False,
                         color=GREY['text'], fontsize=_text_size() - 1)
 
 
-def binscatter(ax, x, y, controls=None, bins=20, color=None, fit=True):
+def binscatter(ax, x: ArrayLike, y: ArrayLike,
+               controls: ArrayLike | None = None, bins=20, color=None,
+               fit=True):
     """Binned scatter: equal-count bin means of y on x, with an OLS fit.
 
     `controls` residualises both x and y on the controls (with an

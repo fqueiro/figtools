@@ -9,6 +9,10 @@ holds the user-facing rationale; this file holds working rules.
   `src/plotsmith/digest.py` (the figure digest and the `render-digest` CLI).
   The style module is one file by design: the placement machinery is
   tightly coupled and the public API is small.
+- `src/plotsmith/guide.md`, printed by `python -m plotsmith`, is the page
+  sessions in other projects read before writing code with the library: a
+  change to a public signature, a default or a house rule rewrites it in the
+  same commit.
 - The digest is a contract with the projects' render step (`digest.py`'s
   docstring has the mechanism): a new artist type or helper mark that
   `describe` learns to read gets a test that draws it and checks the values

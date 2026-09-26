@@ -2,6 +2,7 @@
 name = "plotsmith"
 version = "0.6.0"
 description = "Matplotlib figure style following Kieran Healy's practices: direct labels with collision-avoiding placement, a measurable overlap check, per-target export, and a machine-readable digest of every figure's data"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib>=3.9",
@@ -15,7 +16,8 @@ render-digest = "plotsmith.digest:main"
 
 [dependency-groups]
 # IPython and the inline backend are the notebook side the digest hooks into;
-# the library imports them only when running under a kernel.
+# the library imports them only when running under a kernel. Polars is there
+# for the tests that pass its columns to the helpers as they are.
 dev = ["pytest>=8", "ipython>=8", "matplotlib-inline>=0.1.7"]
 
 [build-system]
