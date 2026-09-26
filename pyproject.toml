@@ -18,7 +18,12 @@ render-digest = "plotsmith.digest:main"
 # IPython and the inline backend are the notebook side the digest hooks into;
 # the library imports them only when running under a kernel. Polars is there
 # for the tests that pass its columns to the helpers as they are.
-dev = ["pytest>=8", "ipython>=8", "matplotlib-inline>=0.1.7"]
+dev = [
+    "pytest>=8",
+    "ipython>=8",
+    "matplotlib-inline>=0.1.7",
+    "polars>=1.44.2",
+]
 
 [build-system]
 requires = ["hatchling"]
