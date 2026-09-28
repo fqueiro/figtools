@@ -27,7 +27,8 @@ copies each figure file's entry into it, under `pdf/` in the same folder.
 
 What a digest holds, per panel: the axis titles, scales and kinds (number,
 date, category); each plotted series with its label, colour and values
-(lines and marker series, bars, scatters, bands, intervals, error bars);
+(lines and marker series, bars, scatters, bands, intervals, error bars
+with or without their points);
 reference rules and shaded spans with their in-place labels; points named
 in data coordinates; notes written in axes coordinates; small image grids in
 full and larger ones by shape and range; and what was not digested. Series
@@ -150,7 +151,8 @@ def _first_color(colors):
 
 def _cap(s):
     """Thin a series longer than SERIES_CAP evenly, and say so."""
-    n = len(s.get('x') or s.get('at') or s.get('category') or s.get('segments') or [])
+    n = len(s.get('x') or s.get('y') or s.get('at') or s.get('category')
+            or s.get('segments') or [])
     if n <= SERIES_CAP:
         return
     keep = np.unique(np.linspace(0, n - 1, SERIES_CAP).round().astype(int))
@@ -198,23 +200,36 @@ def _panel(ax):
             series.append(s)
         elif isinstance(c, mpl.container.ErrorbarContainer):
             line, caps, bars = c.lines
-            claimed.add(id(line))
-            claimed.update(id(a) for a in caps)
-            claimed.update(id(a) for a in bars)
-            xd = np.asarray(line.get_xdata(orig=False), float)
-            yd = np.asarray(line.get_ydata(orig=False), float)
-            s = {'kind': 'errorbar', 'label': _label(c), 'color': _color(line.get_color()),
-                 'x': [X(v) for v in xd], 'y': [Y(v) for v in yd]}
+            claimed.update(id(a) for a in (line, *caps, *bars) if a is not None)
+            s = {'kind': 'errorbar', 'label': _label(c)}
+            if line is not None:
+                xd = np.asarray(line.get_xdata(orig=False), float)
+                yd = np.asarray(line.get_ydata(orig=False), float)
+                s |= {'color': _color(line.get_color()),
+                      'x': [X(v) for v in xd], 'y': [Y(v) for v in yd]}
+            else:
+                # Bars without their points (`fmt='none'`, and every error bar
+                # `bar` draws): each bar's position and range are all the
+                # figure shows. A vertical bar stands at its point's x, a
+                # horizontal one at its y, so with both the point is known.
+                s |= {'color': _first_color(bars[0].get_colors()) if bars else None,
+                      'note': 'error bars drawn without their points'}
             for coll in bars:
                 segs = [np.asarray(sg, float) for sg in coll.get_segments()]
-                if len(segs) != len(xd):
+                if line is not None and len(segs) != len(xd):
                     continue
                 if all(abs(sg[0][0] - sg[-1][0]) < 1e-12 for sg in segs):
+                    if line is None:
+                        s['x'] = [X(sg[0][0]) for sg in segs]
                     s['lo'] = [Y(min(sg[0][1], sg[-1][1])) for sg in segs]
                     s['hi'] = [Y(max(sg[0][1], sg[-1][1])) for sg in segs]
                 else:
+                    if line is None:
+                        s['y'] = [Y(sg[0][1]) for sg in segs]
                     s['xlo'] = [X(min(sg[0][0], sg[-1][0])) for sg in segs]
                     s['xhi'] = [X(max(sg[0][0], sg[-1][0])) for sg in segs]
+            if 'x' not in s and 'y' not in s:
+                continue   # neither points nor bars: nothing was drawn
             _cap(s)
             series.append(s)
 
@@ -704,10 +719,12 @@ def _panel_md(p, k):
     xname = p.get('xlabel') or 'x'
     yname = p.get('ylabel') or 'y'
 
-    # Series sharing the same x go into one wide table.
+    # Series sharing the same x go into one wide table; error bars drawn
+    # without their points have no y to put in it.
     groups, done = {}, set()
     for s in series:
-        if s['kind'] in ('line', 'points', 'errorbar', 'band') and 'x' in s:
+        if s['kind'] in ('line', 'points', 'errorbar', 'band') and 'x' in s \
+                and ('y' in s or s['kind'] == 'band'):
             groups.setdefault(json.dumps(s['x']), []).append(s)
     for grp in groups.values():
         if len(grp) < 2:
@@ -736,7 +753,11 @@ def _panel_md(p, k):
         if id(s) in done:
             continue
         name, kind = _name(s, series), s['kind']
-        if kind in ('line', 'points', 'errorbar') and all(isinstance(v, str) for v in s['y']) \
+        if kind == 'errorbar' and 'y' not in s:
+            header, cols = [xname, 'lo', 'hi'], [s['x'], s['lo'], s['hi']]
+        elif kind == 'errorbar' and 'x' not in s:
+            header, cols = [yname, 'x lo', 'x hi'], [s['y'], s['xlo'], s['xhi']]
+        elif kind in ('line', 'points', 'errorbar') and all(isinstance(v, str) for v in s['y']) \
                 and not all(isinstance(v, str) for v in s['x']):
             # Categories on y, values on x (a dot plot): the category names the row.
             header, cols = [yname, name], [s['y'], s['x']]
@@ -833,12 +854,16 @@ def csv_rows(d):
         for s in p.get('series', []):
             name, kind = s.get('label') or '', s['kind']
             if kind in ('line', 'points', 'errorbar', 'band'):
-                n = len(s['x'])
-                y = s.get('y', [None] * n)
+                # Error bars drawn without their points carry only the
+                # positions their bars give: x for vertical bars, y for
+                # horizontal ones.
+                n = len(s['x'] if 'x' in s else s['y'])
+                x, y = s.get('x', [None] * n), s.get('y', [None] * n)
                 lo, hi = s.get('lo', [None] * n), s.get('hi', [None] * n)
-                rows += [(k + 1, name, kind, s['x'][i], y[i], lo[i], hi[i], '') for i in range(n)]
+                if 'x' in s:
+                    rows += [(k + 1, name, kind, x[i], y[i], lo[i], hi[i], '') for i in range(n)]
                 if 'xlo' in s:
-                    rows += [(k + 1, name, 'errorbar x', s['x'][i], y[i], s['xlo'][i], s['xhi'][i], '')
+                    rows += [(k + 1, name, 'errorbar x', x[i], y[i], s['xlo'][i], s['xhi'][i], '')
                              for i in range(n)]
             elif kind == 'bars':
                 base = s.get('base', [None] * len(s['value']))

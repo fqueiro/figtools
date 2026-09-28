@@ -118,6 +118,40 @@ def test_band_takes_the_name_of_its_line_and_errorbars_keep_their_bounds():
     assert not any(s['kind'] == 'points' for s in p['series'])   # the errorbar's marker line only once
 
 
+def test_errorbars_without_their_points_are_read_from_the_bars():
+    """`fmt='none'` draws the bars and no data line, and `bar` draws its
+    error bars that way: each bar's position and range are what is left."""
+    fig, (a, b, c) = plt.subplots(1, 3)
+    a.errorbar([1, 2], [5, 6], yerr=[0.5, 1], fmt='none', label='range')
+    b.errorbar([5, 6], [0, 1], xerr=[[1, 0.5], [2, 1]], fmt='none')   # asymmetric
+    c.errorbar([1, 2], [5, 6], xerr=0.5, yerr=1, fmt='none')
+    d = digest.describe(fig)
+    ya, xb, both = (p['series'] for p in d['panels'])
+    assert [s['kind'] for s in ya + xb + both] == ['errorbar'] * 3
+    ya, xb, both = ya[0], xb[0], both[0]
+    assert (ya['label'], ya['x'], ya['lo'], ya['hi']) == ('range', [1, 2], [4.5, 5], [5.5, 7])
+    assert 'y' not in ya and ya['note'] == 'error bars drawn without their points'
+    assert (xb['y'], xb['xlo'], xb['xhi']) == ([0, 1], [4, 5.5], [7, 7]) and 'x' not in xb
+    # the vertical bar stands at the point's x and the horizontal one at its y
+    assert (both['x'], both['y'], both['lo'], both['xhi']) == ([1, 2], [5, 6], [4, 5], [1.5, 2.5])
+
+    text = '\n'.join(digest.markdown(d, 'fig-e'))
+    assert '| x | lo | hi |' in text and '| 2 | 5 | 7 |' in text
+    assert '| y | x lo | x hi |' in text and '| 0 | 4 | 7 |' in text
+    assert '*error bars drawn without their points*' in text
+    rows = digest.csv_rows(d)
+    assert (1, 'range', 'errorbar', 2, None, 5, 7, '') in rows
+    assert (2, '', 'errorbar x', None, 1, 5.5, 7, '') in rows
+    assert not any(r[0] == 2 and r[2] == 'errorbar' for r in rows)   # no point to report
+    assert (3, '', 'errorbar x', 1, 5, 0.5, 1.5, '') in rows
+
+    fig, ax = plt.subplots()
+    ax.bar(['a', 'b'], [3, 4], yerr=[0.5, 1])
+    s = panel(fig)['series']
+    assert [x['kind'] for x in s] == ['errorbar', 'bars']
+    assert (s[0]['x'], s[0]['lo'], s[0]['hi']) == (['a', 'b'], [2.5, 3], [3.5, 5])
+
+
 def test_scatter_labelled_points_and_notes():
     fig, ax = plt.subplots()
     ax.scatter([1, 2, 3], [3, 1, 2], label='obs')

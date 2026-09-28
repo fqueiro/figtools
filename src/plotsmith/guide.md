@@ -74,6 +74,13 @@ study or a profile, each with `ps.refline(ax, 0)`.
 - `uv run fig-check code <document>` runs a document and fails on any
   overlapping or clipped label; a plain script uses
   `assert not ps.collisions(fig)`.
+- The check, here and in `save`, measures every text the figure draws,
+  including a key packed from offset boxes (`TextArea`s in an
+  `AnchoredOffsetbox`, for a key with only some words coloured) or a
+  legend, each counted as one label. It tests text against other text,
+  against lines drawn with `plot`, `hlines` or `vlines`, and against the
+  figure's edge; text over scatter markers, bars or arrows passes, so look
+  at those.
 - With `post-render: python -m plotsmith.digest post-render` in the
   project's `_quarto.yml`, `render-digest where <document>` names the folder
   holding the rendered document's figures as text (`outputs.md`, a CSV per

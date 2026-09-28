@@ -548,6 +548,56 @@ def test_collisions_sees_collection_strokes():
     plt.close(fig)
 
 
+def _packed_key(ax, **kw):
+    """A key read as a sentence with only some words coloured, which `key`
+    cannot draw: pieces of text packed into rows and anchored on the axes."""
+    from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea, VPacker
+
+    def row(parts):
+        return HPacker(children=[TextArea(t, textprops={'color': c}) for t, c in parts],
+                       pad=0, sep=0, align='baseline')
+    rows = [row([('●  ', ps.PALETTE[0]), ('observed', ps.PALETTE[0])]),
+            row([('without the ', ps.GREY['text']), ('workers', ps.PALETTE[1]),
+                 (' term', ps.GREY['text'])])]
+    box = AnchoredOffsetbox(child=VPacker(children=rows, align='left', pad=0, sep=4),
+                            frameon=False, borderpad=0.2, **kw)
+    ax.add_artist(box)
+    return box
+
+
+@pytest.mark.parametrize('case, found', [
+    ('clear', set()),               # in a corner the data leaves free
+    ('on text', {'label/label'}),
+    ('on a line', {'label/line'}),
+    ('past the edge', {'text/edge'}),
+])
+def test_collisions_measures_a_key_packed_from_offset_boxes(case, found):
+    """A key built from offset boxes sits on the axes as one artist, outside
+    `ax.texts`, and used to pass wherever it sat. It is one label: its
+    pieces abut by construction, so they are not tested against each other,
+    and the block they make is tested like any other label."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot([0, 1], [0, 1], label='rise')
+    if case == 'clear':
+        _packed_key(ax, loc='lower right')
+    elif case == 'on text':
+        _packed_key(ax, loc='upper left')
+        ax.text(0.03, 0.95, 'a note', transform=ax.transAxes, va='top')
+    elif case == 'on a line':
+        _packed_key(ax, loc='center')
+    else:
+        # hung past the panel's right edge and left out of the layout,
+        # which would otherwise shrink the panel to make room for it
+        _packed_key(ax, loc='upper left', bbox_to_anchor=(1, 1),
+                    bbox_transform=ax.transAxes).set_in_layout(False)
+    hits = ps.collisions(fig)
+    assert {kind for _, kind, _ in hits} == found
+    if case == 'on text':
+        assert hits[0][2] == "'a note' over '● observed without the workers term'"
+    plt.close(fig)
+
+
 def test_key_entries_clear_each_other_in_a_small_panel():
     """The grid-of-small-multiples case: the step must come from measured
     text, or big type in a little panel overprints the stack."""

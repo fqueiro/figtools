@@ -1328,19 +1328,55 @@ def dotplot(ax, labels: ArrayLike, values: ArrayLike,
     return ax
 
 
+def _texts_within(artist):
+    """The visible, non-empty texts an artist draws inside itself, at any
+    depth: the pieces of a key assembled from offset boxes, a legend's
+    entries."""
+    for c in artist.get_children():
+        if not c.get_visible():
+            continue
+        if isinstance(c, mpl.text.Text):
+            if c.get_text().strip():
+                yield c
+        else:
+            yield from _texts_within(c)
+
+
+def _text_blocks(artists):
+    """Each of `artists` that draws text inside itself (a key assembled from
+    offset boxes, `AnchoredText`, a legend), with those texts. Text, axes
+    and axis artists are left out: their text is measured on its own."""
+    out = []
+    for a in artists:
+        if (isinstance(a, (mpl.text.Text, mpl.axis.Axis, mpl.axes.Axes))
+                or not a.get_visible()):
+            continue
+        texts = list(_texts_within(a))
+        if texts:
+            out.append((a, texts))
+    return out
+
+
 def _drawn_texts(fig):
     """Every piece of text the drawn figure shows, with its panel index (-1
-    for figure-level text): annotations, titles, axis titles, offset texts
-    and the tick labels inside the view. Ticks outside the view exist as
-    artists but are never drawn, so they are skipped."""
+    for figure-level text): annotations, titles, axis titles, offset texts,
+    the texts inside keys and legends, and the tick labels inside the view.
+    Ticks outside the view exist as artists but are never drawn, so they
+    are skipped."""
     for t in fig.texts:
         yield -1, t
+    for _, texts in _text_blocks([*fig.artists, *fig.legends]):
+        for t in texts:
+            yield -1, t
     for n, ax in enumerate(fig.axes):
         if not ax.get_visible():
             continue
         for a in ax.get_children():
             if isinstance(a, mpl.text.Text):
                 yield n, a
+        for _, texts in _text_blocks(ax.get_children()):
+            for t in texts:
+                yield n, t
         for axis in (ax.xaxis, ax.yaxis):
             yield n, axis.label
             yield n, axis.offsetText
@@ -1363,6 +1399,11 @@ def collisions(fig, pad=0.004):
     y-title taller than the panel is simply cut. This measures the drawn
     figure instead. Call it on any figure, not only ones built with
     `label_lines`.
+
+    A key assembled from offset boxes (`TextArea`s packed in an
+    `AnchoredOffsetbox`, `AnchoredText`) or a legend counts as one label,
+    measured as the union of its texts: its pieces abut by construction, so
+    only the block they make can collide with anything.
 
     Returns a list of (panel, kind, description) tuples, empty when clean.
     `kind` is 'label/label', 'label/line' or 'text/edge'.
@@ -1391,8 +1432,20 @@ def collisions(fig, pad=0.004):
                  and not getattr(t, '_fs_mark', False)]
         boxes = [_box(t, r, inv) for t in texts]
         flat = [' '.join(t.get_text().split()) for t in texts]
+        # A direct label is anchored to a point on its own line, so the line
+        # necessarily reaches it. Only an intrusion away from that anchor is
+        # a collision.
+        anchors = [_to_axes(ax, [t.xy])[0]
+                   if isinstance(t, mpl.text.Annotation)
+                   and t.xycoords == 'data' else None for t in texts]
+        for _, parts in _text_blocks(ax.get_children()):
+            boxes.append(Bbox.union(
+                [mpl.text.Text.get_window_extent(t, r) for t in parts]
+            ).transformed(inv))
+            flat.append(' '.join(' '.join(t.get_text().split()) for t in parts))
+            anchors.append(None)
 
-        for i, j in combinations(range(len(texts)), 2):
+        for i, j in combinations(range(len(boxes)), 2):
             if _pad_box(boxes[i], pad).overlaps(boxes[j]):
                 found.append((n, 'label/label', f'{flat[i]!r} over {flat[j]!r}'))
 
@@ -1400,13 +1453,7 @@ def collisions(fig, pad=0.004):
                    else 'unlabelled', _curve(ax, ln))
                   for ln in _data_lines(ax)]
         curves += [('unlabelled stroke', c) for c in _collection_curves(ax)]
-        for i, t in enumerate(texts):
-            # A direct label is anchored to a point on its own line, so the
-            # line necessarily reaches it. Only an intrusion away from that
-            # anchor is a collision.
-            anchor = (_to_axes(ax, [t.xy])[0]
-                      if isinstance(t, mpl.text.Annotation)
-                      and t.xycoords == 'data' else None)
+        for i, anchor in enumerate(anchors):
             for name, c in curves:
                 away = c if anchor is None else c[
                     np.hypot(c[:, 0] - anchor[0], c[:, 1] - anchor[1]) > 0.025]
