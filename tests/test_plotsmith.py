@@ -484,6 +484,28 @@ def test_label_lines_keeps_a_shared_limit_set_by_hand_between_panels():
     plt.close(fig)
 
 
+@pytest.mark.parametrize('build', ['subplots', 'add_axes'])
+def test_save_keeps_an_axes_box_placed_by_hand(tmp_path, build):
+    """Saving switches the layout engine off and restores it, and matplotlib
+    restores "none" as the default `setup()` sets, constrained layout, which
+    re-laid out a box placed by hand before the slide variant was written."""
+    ps.setup()
+    if build == 'subplots':
+        fig, ax = plt.subplots(figsize=(5.9, 2.2), layout='none')
+        fig.subplots_adjust(left=0.1, right=0.85, bottom=0.2, top=0.95)
+    else:
+        fig = plt.figure(figsize=(5.9, 2.2), layout='none')
+        ax = fig.add_axes([0.1, 0.2, 0.75, 0.75])
+    ax.plot([0, 1], [0, 1])
+    box = ax.get_position().bounds
+    ps.save(fig, tmp_path / 'f')
+    fig.canvas.draw()
+    assert ax.get_position().bounds == box
+    assert not isinstance(fig.get_layout_engine(),
+                          matplotlib.layout_engine.ConstrainedLayoutEngine)
+    plt.close(fig)
+
+
 def test_dotplot_keeps_a_limit_set_before_it():
     ps.setup()
     fig, ax = plt.subplots()

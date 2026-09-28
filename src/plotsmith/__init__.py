@@ -1967,7 +1967,7 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
                                    f'written for it:\n{what}')
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
-            with digest._quiet_pdf_metadata():
+            with digest._quiet_pdf_metadata(), digest._keep_layout(fig):
                 fig.savefig(out, metadata=digest.pdf_metadata(digest.describe(fig)))
             written.append(out)
     finally:

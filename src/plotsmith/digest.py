@@ -626,6 +626,23 @@ def _quiet_pdf_metadata():
         yield
 
 
+@contextlib.contextmanager
+def _keep_layout(fig):
+    """Leave a figure drawn without a layout engine without one.
+
+    Saving switches the engine off and then restores it, and matplotlib
+    restores "none" by reading the default, which `setup()` points at
+    constrained layout: a figure whose axes box was placed by hand
+    (`layout='none'`) would have it re-laid out on every later draw.
+    """
+    engine = fig.get_layout_engine()
+    try:
+        yield
+    finally:
+        if engine is None and fig.get_layout_engine() is not None:
+            fig.set_layout_engine('none')
+
+
 _PDF_ENTRY = re.compile(rb'/' + KEY.encode() + rb'(?:-(\d+))?\s*\(([A-Za-z0-9+/=]*)\)')
 
 
@@ -688,7 +705,7 @@ def _wrap_formatter(registry, kind):
         meta = dict(kw.pop('metadata', None) or {})
         d = describe(fig)
         meta.update(pdf_metadata(d) if kind == 'pdf' else {KEY: encode(d)})
-        with _quiet_pdf_metadata():
+        with _quiet_pdf_metadata(), _keep_layout(fig):
             return func(fig, metadata=meta, **kw)
 
     with_digest._plotsmith_digest = True

@@ -64,6 +64,15 @@ study or a profile, each with `ps.refline(ax, 0)`.
   never moved. A rule's label that then does not fit on its usual side goes
   to the other side of the rule, or is left outside the panel for the check
   to report.
+- Figures read at one scale, such as subfigures the paper stacks, share one
+  size, one axes box and one span of data. Make each with
+  `fig = plt.figure(figsize=(w, h), layout='none')` and
+  `ax = fig.add_axes([l / w, b / h, 1 - (l + r) / w, 1 - (b + t) / h])`,
+  margins in inches wide enough for the tick and direct labels, since the
+  layout engine sizes each axes to its own labels. Set every figure's limits
+  by hand to windows of the same span, with room inside the axes for rule
+  labels near the top. plotsmith keeps the limits and the box, and the check
+  refuses a label that does not fit.
 - Figures read at one scale, such as subfigures a paper stacks, share one
   size and a fixed axes box: `plt.figure(figsize=..., layout='none')` with
   `fig.add_axes` at margins given in inches, since a layout engine sizes
