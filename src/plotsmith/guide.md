@@ -64,6 +64,12 @@ study or a profile, each with `ps.refline(ax, 0)`.
   never moved. A rule's label that then does not fit on its usual side goes
   to the other side of the rule, or is left outside the panel for the check
   to report.
+- Figures read at one scale, such as subfigures a paper stacks, share one
+  size and a fixed axes box: `plt.figure(figsize=..., layout='none')` with
+  `fig.add_axes` at margins given in inches, since a layout engine sizes
+  each axes to its own labels. Each gets limits set by hand to a window of
+  the same span, with room inside the axes for the labels of rules near its
+  top.
 - In a Quarto or Jupyter document, a captioned figure cell produces the
   figure and nothing else: end it with `plt.show()`. A cell ending on a bare
   `ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` displays the
