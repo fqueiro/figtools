@@ -105,6 +105,21 @@ def test_check_reports_a_failed_inline_assert_instead_of_dying(tmp_path):
     assert any('assert' in line for line in found)
 
 
+def test_check_lets_a_cell_read_the_source_of_its_functions(tmp_path):
+    """A kernel registers each cell's source, so `inspect` reads a function
+    defined in a cell, which is what a document's cached steps key on. Run
+    from a string with no source registered, the same cell got an error or,
+    worse, lines of whatever file was running at that line number."""
+    doc = tmp_path / 'doc.qmd'
+    doc.write_text(QMD.replace('ps.setup()', 'ps.setup()\nimport inspect\n'
+                               'def step():\n    return 1\n'
+                               "if inspect.getsource(step) != 'def step():\\n    return 1\\n':\n"
+                               "    raise RuntimeError('read the wrong source')"),
+                   encoding='utf-8')
+    n, found = fc.check(doc)
+    assert (n, found) == (1, [])
+
+
 def test_percent_splits_cells_the_way_quarto_does():
     parts = list(fc.percent('import os\n' + PY))
     assert [kind for kind, _ in parts] == ['markdown', 'markdown', 'code',

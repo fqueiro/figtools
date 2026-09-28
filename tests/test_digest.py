@@ -65,6 +65,13 @@ def test_bars_read_categories_and_values_both_ways():
     assert t['orientation'] == 'horizontal' and t['category'] == ['p', 'q'] and t['value'] == [0.5, 1.5]
 
 
+def test_a_line_against_category_names_reads_back_the_names():
+    fig, ax = plt.subplots()
+    ax.plot([0.2, 0.5, 0.8], ['Portugal', 'Spain', 'Italy'], label='gap')
+    s = panel(fig)['series'][0]
+    assert (s['kind'], s['x'], s['y']) == ('line', [0.2, 0.5, 0.8], ['Portugal', 'Spain', 'Italy'])
+
+
 def test_stacked_bars_carry_their_base():
     fig, ax = plt.subplots()
     ax.bar([1, 2], [1, 2])

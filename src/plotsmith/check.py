@@ -26,6 +26,7 @@ overlap looks like.
 import argparse
 import io
 import json
+import linecache
 import re
 import subprocess
 import sys
@@ -206,8 +207,13 @@ def check(doc, figs=None):
             warnings.simplefilter('ignore')
             # Running the document's own code is the point: the figures only
             # exist once it has run. Same trust as rendering the document.
+            # A kernel registers each cell's source under the cell's name,
+            # which is where `inspect` reads a function's source from; code
+            # keyed on that source (a document's cached steps) fails without.
+            name = f'<{doc.name}:chunk{i}>'
+            linecache.cache[name] = (len(body), None, body.splitlines(True), name)
             try:
-                exec(compile(body, f'{doc.name}:chunk{i}', 'exec'), ns)  # noqa: S102
+                exec(compile(body, name, 'exec'), ns)  # noqa: S102
             except AssertionError:
                 # The inline `assert not collisions(fig)` idiom: the document
                 # measured its own figure and found overlaps. Report it and

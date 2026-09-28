@@ -598,6 +598,25 @@ def test_collisions_measures_a_key_packed_from_offset_boxes(case, found):
     plt.close(fig)
 
 
+def test_lines_against_category_names_are_measured_where_they_are_plotted():
+    """A line plotted against names sits at the names' positions on the
+    axis; the check and the direct labels read those positions, and used to
+    fail converting the names themselves to numbers."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot([0.2, 0.5, 0.8], ['Portugal', 'Spain', 'Italy'])
+    assert ps.collisions(fig) == []
+    ax.text(0.5, 'Spain', 'across the line', ha='center', va='center')
+    assert {kind for _, kind, _ in ps.collisions(fig)} == {'label/line'}
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot(['1995', '2005', '2015'], [1, 2, 3], label='rise')
+    ps.label_lines(ax)
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
 def _unit_panel():
     """A panel whose data coordinates are its axes fractions."""
     ps.setup()

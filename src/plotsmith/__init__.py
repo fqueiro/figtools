@@ -160,7 +160,8 @@ def _axis_data(axis):
     out = []
     for ln in ax.lines:
         if ln.get_transform() is ax.transData:
-            out.append(ln.get_xdata() if i == 0 else ln.get_ydata())
+            out.append(ln.get_xdata(orig=False) if i == 0
+                       else ln.get_ydata(orig=False))
     for coll in ax.collections:
         if coll.get_offset_transform() is ax.transData:
             off = np.ma.getdata(coll.get_offsets())
@@ -431,6 +432,14 @@ def _to_axes(ax, pts):
     return ax.transAxes.inverted().transform(ax.transData.transform(pts))
 
 
+def _plotted(ax, xy):
+    """A point given in data units (numbers, category names, dates) as the
+    numbers it is plotted at."""
+    x, y = xy
+    return (float(np.ravel(ax.convert_xunits(x))[0]),
+            float(np.ravel(ax.convert_yunits(y))[0]))
+
+
 def _to_data(ax, pts):
     """Axes fraction -> data coordinates."""
     pts = np.atleast_2d(np.asarray(pts, float))
@@ -442,10 +451,12 @@ def _curve(ax, line, step=0.004):
 
     Testing a label box against the plotted points alone would miss a steep
     segment that crosses the box between two observations, which is exactly
-    where a line and a label are most likely to collide.
+    where a line and a label are most likely to collide. The points are
+    read where they are plotted, so a line against category names or dates
+    is measured at its positions on the axis, not at the names or dates.
     """
-    xd = np.asarray(line.get_xdata(), float)
-    yd = np.asarray(line.get_ydata(), float)
+    xd = np.asarray(line.get_xdata(orig=False), float)
+    yd = np.asarray(line.get_ydata(orig=False), float)
     ok = np.isfinite(xd) & np.isfinite(yd)
     if not ok.any():
         return np.empty((0, 2))
@@ -499,8 +510,8 @@ def _rule_curves(ax):
     for ln in ax.get_lines():
         if ln.get_transform() is ax.transData:
             continue
-        xy = np.column_stack([np.asarray(ln.get_xdata(), float),
-                              np.asarray(ln.get_ydata(), float)])
+        xy = np.column_stack([np.asarray(ln.get_xdata(orig=False), float),
+                              np.asarray(ln.get_ydata(orig=False), float)])
         if len(xy) < 2:
             continue
         pts = inv.transform(ln.get_transform().transform(xy))
@@ -960,7 +971,10 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
 
     ends, starts = [], []
     for ln in lines:
-        xd, yd = np.asarray(ln.get_xdata(), float), np.asarray(ln.get_ydata(), float)
+        # where the line is plotted: positions for category names, the
+        # axis's own units for dates
+        xd = np.asarray(ln.get_xdata(orig=False), float)
+        yd = np.asarray(ln.get_ydata(orig=False), float)
         ok = np.isfinite(xd) & np.isfinite(yd)
         if not ok.any():
             raise ValueError(f'label_lines: series {ln.get_label()!r} is empty')
@@ -1569,13 +1583,13 @@ def collisions(fig, pad=0.004):
         # A direct label is anchored to a point on its own line, so the line
         # necessarily reaches it. Only an intrusion away from that anchor is
         # a collision.
-        anchors = [_to_axes(ax, [t.xy])[0]
+        anchors = [_to_axes(ax, [_plotted(ax, t.xy)])[0]
                    if isinstance(t, mpl.text.Annotation)
                    and t.xycoords == 'data' else None for t in texts]
         # Where a text is pinned in the data, which decides the shape it
         # belongs to: an annotation's anchor, or a plain text's position.
         homes = [a if a is not None
-                 else _to_axes(ax, [t.get_position()])[0]
+                 else _to_axes(ax, [_plotted(ax, t.get_position())])[0]
                  if t.get_transform() is ax.transData else None
                  for t, a in zip(texts, anchors)]
         for _, parts in _text_blocks(ax.get_children()):
