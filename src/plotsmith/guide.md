@@ -58,7 +58,12 @@ study or a profile, each with `ps.refline(ax, 0)`.
 - Text sizes come from `setup(base=...)` alone; never set a font size by
   hand.
 - Axis limits are left to autoscale; a limit set by hand states its reason
-  in a comment.
+  in a comment. Helpers move a limit only while it autoscales (ending the
+  panel at the data for direct labels, raising the top to fit a rule's
+  label); a limit set by hand, such as a scale shared across figures, is
+  never moved. A rule's label that then does not fit on its usual side goes
+  to the other side of the rule, or is left outside the panel for the check
+  to report.
 - In a Quarto or Jupyter document, a captioned figure cell produces the
   figure and nothing else: end it with `plt.show()`. A cell ending on a bare
   `ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` displays the

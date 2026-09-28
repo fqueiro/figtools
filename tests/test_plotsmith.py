@@ -406,6 +406,93 @@ def test_refline_label_at_the_top_of_the_data_takes_its_headroom():
     plt.close(fig)
 
 
+def test_refline_keeps_a_top_set_by_hand_and_names_the_rule_below_it():
+    """A common scale across figures is a limit set by hand; raising it to
+    fit a label broke one silently. The label goes below the rule instead."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    x = np.arange(1995, 2024)
+    ax.plot(x, np.linspace(0.62, 0.72, len(x)), label='Portugal')
+    ps.refline(ax, 1, 'UE27')
+    ax.set_ylim(0.6, 1.01)
+    ps.label_lines(ax)
+    assert ps.collisions(fig) == []
+    assert ax.get_ylim() == (0.6, 1.01)
+    lab = next(t for t in ax.texts if t.get_text() == 'UE27')
+    assert lab.get_va() == 'top'
+    plt.close(fig)
+
+
+def test_a_rule_label_with_room_on_neither_side_is_reported_not_made_room_for():
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot([0, 1], [0.2, 0.4])
+    ps.refline(ax, 2, 'target')
+    ax.set_ylim(0, 1)   # cuts the named rule off
+    assert 'label/outside' in {kind for _, kind, _ in ps.collisions(fig)}
+    assert ax.get_ylim() == (0, 1)
+    plt.close(fig)
+
+
+def test_a_vertical_rule_label_at_the_right_edge_goes_left_of_its_rule():
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot([2000, 2020], [0, 0.3])
+    ax.set_xlim(2000, 2020)
+    ax.set_ylim(0, 1)
+    ps.refline(ax, 2019.5, 'the reform', axis='x')
+    assert ps.collisions(fig) == []
+    lab = next(t for t in ax.texts if t.get_text() == 'the reform')
+    assert lab.get_ha() == 'right'
+    assert ax.get_xlim() == (2000, 2020)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('by_hand', [False, True])
+def test_headroom_grows_an_autoscaled_top_and_keeps_one_set_by_hand(by_hand):
+    """Where the data fill the whole rule, the label needs room at the top:
+    made while the axis autoscales, as before; never over a limit set by
+    hand, where the label stays on the data for the check to report."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    x = np.linspace(0, 10, 2000)
+    ax.plot(x, np.sin(40 * x))
+    if by_hand:
+        ax.set_ylim(-1.1, 1.1)
+    ps.refline(ax, 5, 'midpoint', axis='x')
+    hits = ps.collisions(fig)
+    if by_hand:
+        assert ax.get_ylim() == (-1.1, 1.1)
+        assert any(kind == 'label/line' for _, kind, _ in hits)
+    else:
+        assert ax.get_ylim()[1] > 1.2 and hits == []
+    plt.close(fig)
+
+
+def test_label_lines_keeps_a_shared_limit_set_by_hand_between_panels():
+    """Panels sharing an x-axis end at the latest line end, unless the code
+    set the limit by hand in between: then it stays."""
+    ps.setup()
+    fig, (a, b) = plt.subplots(1, 2, sharex=True, figsize=(5.9, 2.6))
+    a.plot([2000, 2010], [0, 1], label='a')
+    b.plot([2000, 2010], [1, 0], label='b')
+    ps.label_lines(a)
+    a.set_xlim(2000, 2020)   # a horizon drawn past the data
+    ps.label_lines(b)
+    fig.canvas.draw()
+    assert a.get_xlim() == b.get_xlim() == (2000, 2020)
+    plt.close(fig)
+
+
+def test_dotplot_keeps_a_limit_set_before_it():
+    ps.setup()
+    fig, ax = plt.subplots()
+    ax.set_ylim(-2, 5)
+    ps.dotplot(ax, ['a', 'b'], [0.2, 0.4])
+    assert ax.get_ylim() == (-2, 5)
+    plt.close(fig)
+
+
 def test_collisions_reports_text_that_runs_off_the_figure():
     """A y-title taller than the figure is cut without a word: matplotlib's
     tight bounding box grows for most text but never for an axis title's

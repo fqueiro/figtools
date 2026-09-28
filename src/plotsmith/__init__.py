@@ -36,7 +36,7 @@ The choices follow Kieran Healy's *Data Visualization* practices:
     that repeats them; a title stays only where the ticks alone would
     mislead, as on a scatter whose two axes are different variables. Limits
     are left to autoscale, which includes the reference rule; a limit set
-    by hand states its reason in a comment.
+    by hand states its reason in a comment, and no helper moves it.
   * Two type sizes derived from one base (`setup(base=...)`): titles and
     axis labels at the base, every other piece of text half a point below.
     One knob makes size drift between elements structurally impossible, and
@@ -905,6 +905,30 @@ _END_PAD = 0.012
 _LABEL_GAP = 0.018
 
 
+def _may_move(ax, axis):
+    """May a helper move the limits of `axis` ('x' or 'y')?
+
+    Only while matplotlib still autoscales it, or while the limits there are
+    the ones a helper last set, which a later draw re-solves. A limit the
+    code set by hand is the figure's decision, a common scale across
+    figures for one, and no helper moves it.
+    """
+    auto = ax.get_autoscalex_on() if axis == 'x' else ax.get_autoscaley_on()
+    now = ax.get_xlim() if axis == 'x' else ax.get_ylim()
+    return auto or tuple(now) == getattr(ax, f'_fs_{axis}lim', None)
+
+
+def _set_lim(ax, axis, lo, hi):
+    """Set the limits of `axis` as a helper, recording them on every axes
+    sharing it, so `_may_move` can tell them from limits set by hand."""
+    (ax.set_xlim if axis == 'x' else ax.set_ylim)(lo, hi)
+    shared = (ax.get_shared_x_axes() if axis == 'x'
+              else ax.get_shared_y_axes()).get_siblings(ax)
+    for a in shared:
+        setattr(a, f'_fs_{axis}lim',
+                tuple(a.get_xlim() if axis == 'x' else a.get_ylim()))
+
+
 def _end_panel_at(ax, xend, span):
     """End the panel a hair past `xend`, unless the x-limit was set by hand.
 
@@ -917,14 +941,13 @@ def _end_panel_at(ax, xend, span):
     treated as one: every panel ends at the latest end asked of any of them,
     so a panel labelled later cannot clip the lines of one labelled earlier.
     """
-    shared = ax.get_shared_x_axes().get_siblings(ax)
-    asked = [a._fs_xend for a in shared if hasattr(a, '_fs_xend')]
-    if not asked and not ax.get_autoscalex_on():
+    if not _may_move(ax, 'x'):
         return
-    xend = max([xend, *asked])
+    shared = ax.get_shared_x_axes().get_siblings(ax)
+    xend = max([xend, *(a._fs_xend for a in shared if hasattr(a, '_fs_xend'))])
     for a in shared:
         a._fs_xend = xend
-    ax.set_xlim(ax.get_xlim()[0], xend + _END_PAD * span)
+    _set_lim(ax, 'x', ax.get_xlim()[0], xend + _END_PAD * span)
 
 
 def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
@@ -1266,28 +1289,74 @@ def _headroom(ax, box, curves, want):
     """Raise the top of the panel until `want` of it is free above the data.
 
     Only used where a label that must sit at a fixed x has no clear height
-    left to occupy: the alternative is printing it over a line. Returns
-    whether the limit moved.
+    left to occupy: the alternative is printing it over a line. A top set by
+    hand stays, and the label stays on the data for `collisions` to report.
+    Returns whether the limit moved.
     """
+    if not _may_move(ax, 'y'):
+        return False
     over = [c[(c[:, 0] >= box.x0 - 0.01) & (c[:, 0] <= box.x1 + 0.01)][:, 1]
             for c in curves]
     top = max((float(v.max()) for v in over if len(v)), default=0.0)
     if top <= 1 - want:
         return False
     y0, y1 = ax.get_ylim()
-    ax.set_ylim(y0, y0 + (y1 - y0) * top / (1 - want))
+    _set_lim(ax, 'y', y0, y0 + (y1 - y0) * top / (1 - want))
     return True
 
 
-def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
+# A rule's label sits this far from the rule, in points, on its usual side:
+# above a horizontal rule, right of a vertical one.
+_RULE_GAP = 3
+
+
+def _rule_side(renderer, ax, ann, axis, raise_top):
+    """Put a rule's label on the side of the rule where it fits inside the
+    panel; return whether it changed side.
+
+    The usual side is above a horizontal rule and right of a vertical one.
+    When the label does not fit there, it goes to the other side if it fits
+    there, unless `raise_top` says the panel's top will grow to make room
+    above. When it fits on neither side it stays on the usual one, outside
+    the panel, and `collisions` reports it: a limit set by hand is not moved
+    to make room.
+    """
+    inv = ax.transAxes.inverted()
+    box = _box(ann, renderer, inv)
+    j = 1 if axis == 'y' else 0
+    ext = box.height if axis == 'y' else box.width
+    size = ax.get_window_extent().height if axis == 'y' else ax.get_window_extent().width
+    gap = _RULE_GAP * ax.figure.dpi / 72 / size
+    value = np.ravel(ax.convert_yunits(ann.xy[1]) if axis == 'y'
+                     else ax.convert_xunits(ann.xy[0]))[0]
+    point = (0.0, value) if axis == 'y' else (value, 0.0)
+    at = inv.transform(ax.transData.transform(np.asarray(point, float)))[j]
+    fits_usual = at + gap + ext <= 0.985
+    fits_other = at - gap - ext >= 0.015
+    usual = fits_usual or raise_top or not fits_other
+    now = ann.xyann[j] >= 0
+    if usual == now:
+        return False
+    off = _RULE_GAP if usual else -_RULE_GAP
+    if axis == 'y':
+        ann.xyann = (0, off)
+        ann.set_va('bottom' if usual else 'top')
+    else:
+        ann.xyann = (off, 0)
+        ann.set_ha('left' if usual else 'right')
+    return True
+
+
+def _slide(renderer, ax, ann, axis, order, fixed, grow=False, rule=False):
     """Slide a label along its own rule, or down its band, to a clear stretch.
 
     A reference-line or shaded-band label has to stay on the thing it names,
-    so the only freedom is where along it. `order` lists candidate positions
-    in order of preference and the first clear of the data and of `fixed`
-    wins. Direct line labels are not in `fixed`: they are placed after this
-    and dodge this label themselves, so having each avoid the other would
-    leave the two of them chasing each other between draws.
+    so the only freedom is where along it, and for a rule's label (`rule`)
+    which side of it. `order` lists candidate positions in order of
+    preference and the first clear of the data and of `fixed` wins. Direct
+    line labels are not in `fixed`: they are placed after this and dodge
+    this label themselves, so having each avoid the other would leave the
+    two of them chasing each other between draws.
     """
     # Moving the label means moving `xy`, which only carries the text with it
     # when the text is positioned as an offset from it. Anchoring it any other
@@ -1296,6 +1365,8 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
         raise ValueError('_slide: label must be placed at an offset from its '
                          f'anchor, not {ann.anncoords!r}')
     inv = ax.transAxes.inverted()
+    grows = axis == 'y' and _may_move(ax, 'y')
+    flipped = rule and _rule_side(renderer, ax, ann, axis, raise_top=grows)
     box = _box(ann, renderer, inv)
     curves = [_curve(ax, ln) for ln in _data_lines(ax)] + _collection_curves(ax)
     others = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
@@ -1306,9 +1377,12 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
     for w in order:
         d = [0.0, 0.0]
         d[j] = w - here
-        if not _hits(Bbox.from_bounds(box.x0 + d[0], box.y0 + d[1],
-                                      box.width, box.height), others, curves,
-                     shapes=shapes):
+        cand = Bbox.from_bounds(box.x0 + d[0], box.y0 + d[1], box.width, box.height)
+        # a rule's label stays inside the panel along its rule
+        lo, hi = (cand.x0, cand.x1) if axis == 'y' else (cand.y0, cand.y1)
+        if rule and (lo < 0 or hi > 1):
+            continue
+        if not _hits(cand, others, curves, shapes=shapes):
             break
     else:
         # The data fills the panel wherever this label could go. Make room at
@@ -1318,17 +1392,19 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
             if _headroom(ax, box, curves, box.height + 0.04):
                 return True
         w = order[0]
-    if axis == 'y' and box.y1 > 0.985:
+    if grows and box.y1 > 0.985:
         # A rule at the top of the data (parity above a deficit) leaves its
         # label no room above the line: it would hover over the panel's edge,
-        # on nothing it names. Raise the top by the measured overshoot; the
-        # next draw re-measures, so a scale that is not linear settles in a
-        # step or two rather than needing the arithmetic to be exact.
+        # on nothing it names. While the axis autoscales, raise the top by the
+        # measured overshoot; the next draw re-measures, so a scale that is
+        # not linear settles in a step or two rather than needing the
+        # arithmetic to be exact. A top set by hand stays: `_rule_side` has
+        # put the label below the rule instead, or left it for `collisions`.
         y0, _ = ax.get_ylim()
-        ax.set_ylim(y0, float(_to_data(ax, [(0.0, box.y1 + 0.02)])[0][1]))
+        _set_lim(ax, 'y', y0, float(_to_data(ax, [(0.0, box.y1 + 0.02)])[0][1]))
         return True
     if abs(w - here) < 1e-4:
-        return False
+        return flipped
     ann.xy = (w, ann.xy[1]) if axis == 'y' else (ann.xy[0], w)
     return True
 
@@ -1342,6 +1418,13 @@ def refline(ax, value, label=None, axis='y', where='auto', fontsize=None,
     axes fraction, or 'auto' to slide the label to the first stretch of the
     rule that no data line and no other label is already using: a horizontal
     rule reads from the left, a vertical one from the top.
+
+    The label sits above a horizontal rule and right of a vertical one. With
+    'auto', a label above a rule at the top of the data raises the top of
+    the panel to fit while the y-axis autoscales. A limit set by hand is
+    never moved: a label that does not fit on its usual side goes to the
+    other side of the rule if it fits there, and is otherwise left outside
+    the panel for `collisions` to report.
     """
     fontsize = _text_size() if fontsize is None else fontsize
     draw = ax.axhline if axis == 'y' else ax.axvline
@@ -1354,27 +1437,33 @@ def refline(ax, value, label=None, axis='y', where='auto', fontsize=None,
     if axis == 'y':
         ann = ax.annotate(label, xy=(start, value),
                           xycoords=('axes fraction', 'data'),
-                          xytext=(0, 3), textcoords='offset points',
+                          xytext=(0, _RULE_GAP), textcoords='offset points',
                           color=GREY['text'], fontsize=fontsize,
                           ha='left', va='bottom')
     else:
         ann = ax.annotate(label, xy=(value, start),
                           xycoords=('data', 'axes fraction'),
-                          xytext=(3, 0), textcoords='offset points',
+                          xytext=(_RULE_GAP, 0), textcoords='offset points',
                           color=GREY['text'], fontsize=fontsize,
                           ha='left', va='bottom')
+    ann._fs_inside = True   # names the rule in place, so belongs in the panel
     if auto:
         order = (np.arange(0.02, 0.80, 0.025) if axis == 'y'
                  else np.arange(0.92, 0.05, -0.04))
         _defer(ax, partial(_slide, ax=ax, ann=ann, axis=axis, order=order,
-                           fixed=fixed, grow=axis == 'x'))
+                           fixed=fixed, grow=axis == 'x', rule=True))
+    else:
+        _defer(ax, partial(_rule_side, ax=ax, ann=ann, axis=axis,
+                           raise_top=False))
 
 
 def shade(ax, x0, x1, label=None, where='auto', fontsize=None, **kw):
     """Shade an x-range and name it, so the band explains itself.
 
     The name sits at the top of the band, or at the highest point down the
-    band that the data leaves free when `where` is 'auto'.
+    band that the data leaves free when `where` is 'auto'; where the data
+    leaves none, the top of the panel rises to make room while the y-axis
+    autoscales, and a top set by hand stays.
     """
     fontsize = _text_size() if fontsize is None else fontsize
     ax.axvspan(x0, x1, color=GREY['shade'], lw=0, zorder=0, **kw)
@@ -1458,7 +1547,8 @@ def dotplot(ax, labels: ArrayLike, values: ArrayLike,
         ax.hlines(y, baseline, values, color=GREY['grid'], lw=1.2, zorder=1)
     ax.scatter(values, y, color=colors, s=markersize ** 2, zorder=2)
     ax.set_yticks(y, labels)
-    ax.set_ylim(-0.7, len(values) - 0.3)
+    if _may_move(ax, 'y'):   # rows fill the panel, unless the caller set it
+        _set_lim(ax, 'y', -0.7, len(values) - 0.3)
     grid_axis(ax, 'x')
     return ax
 
@@ -1552,9 +1642,13 @@ def collisions(fig, pad=0.004):
     as reference rules are. Scatter markers are measured at their drawn
     size, with the same allowance near a label's own anchor as lines.
 
+    A reference rule's label (`refline`) names the rule in place, so one
+    that sits outside its panel is reported too: no helper moves a limit
+    set by hand to make room for it.
+
     Returns a list of (panel, kind, description) tuples, empty when clean.
-    `kind` is 'label/label', 'label/line', 'label/shape', 'label/marker' or
-    'text/edge'.
+    `kind` is 'label/label', 'label/line', 'label/shape', 'label/marker',
+    'label/outside' or 'text/edge'.
     """
     fig.canvas.draw()
     r = _renderer(fig)
@@ -1603,6 +1697,11 @@ def collisions(fig, pad=0.004):
         for i, j in combinations(range(len(boxes)), 2):
             if _pad_box(boxes[i], pad).overlaps(boxes[j]):
                 found.append((n, 'label/label', f'{flat[i]!r} over {flat[j]!r}'))
+        # A label naming a rule in place hovers over nothing outside the panel.
+        for t, b, name in zip(texts, boxes, flat):
+            if getattr(t, '_fs_inside', False) and (
+                    b.x0 < -0.005 or b.y0 < -0.005 or b.x1 > 1.005 or b.y1 > 1.005):
+                found.append((n, 'label/outside', f'{name!r} sits outside its panel'))
 
         curves = [(ln.get_label() if not ln.get_label().startswith('_')
                    else 'unlabelled', _curve(ax, ln))
