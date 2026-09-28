@@ -73,12 +73,6 @@ study or a profile, each with `ps.refline(ax, 0)`.
   by hand to windows of the same span, with room inside the axes for rule
   labels near the top. plotsmith keeps the limits and the box, and the check
   refuses a label that does not fit.
-- Figures read at one scale, such as subfigures a paper stacks, share one
-  size and a fixed axes box: `plt.figure(figsize=..., layout='none')` with
-  `fig.add_axes` at margins given in inches, since a layout engine sizes
-  each axes to its own labels. Each gets limits set by hand to a window of
-  the same span, with room inside the axes for the labels of rules near its
-  top.
 - In a Quarto or Jupyter document, a captioned figure cell produces the
   figure and nothing else: end it with `plt.show()`. A cell ending on a bare
   `ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` displays the
