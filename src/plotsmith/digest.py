@@ -27,13 +27,15 @@ copies each figure file's entry into it, under `pdf/` in the same folder.
 
 What a digest holds, per panel: the axis titles, scales and kinds (number,
 date, category); each plotted series with its label, colour and values
-(lines and marker series, bars, scatters, bands, intervals, error bars
-with or without their points);
-reference rules and shaded spans with their in-place labels; points named
-in data coordinates; notes written in axes coordinates; small image grids in
-full and larger ones by shape and range; and what was not digested. Series
-longer than `SERIES_CAP` points are thinned evenly and say so. Values keep
-six significant digits.
+(lines and marker series, bars, scatters, bands, intervals, error bars with
+or without their points); reference rules and shaded spans with their
+in-place labels; points named in data coordinates; notes, which are text
+written in axes coordinates, the lines of a key packed from offset boxes
+and the legend entries that name no series, each with its colour, which
+names an unlabelled series drawn in it; small image grids in full and
+larger ones by shape and range; and what was not digested. Series longer
+than `SERIES_CAP` points are thinned evenly and say so. Values keep six
+significant digits.
 
     render-digest post-render        # what `_quarto.yml` runs after a render
     render-digest where <document>   # the folder a document's digest lands in
@@ -62,6 +64,7 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.category
 import matplotlib.dates as mdates
+import matplotlib.offsetbox
 import numpy as np
 
 from plotsmith import GREY
@@ -147,6 +150,59 @@ def _color(c):
 def _first_color(colors):
     colors = np.atleast_2d(np.asarray(colors))
     return _color(colors[0]) if len(colors) and colors.shape[-1] in (3, 4) else None
+
+
+def _any_color(c):
+    """A colour given as a name, a tuple or an array of them, as hex; None
+    when there is none."""
+    if isinstance(c, str):
+        return _color(c)
+    a = np.asarray(c)
+    if not a.size:
+        return None
+    return _color(tuple(a)) if a.ndim == 1 else _first_color(a)
+
+
+def _handle_color(h):
+    """The colour a legend entry's handle is drawn in; None when it has none
+    to read."""
+    for get in ('get_color', 'get_facecolor'):
+        c = _any_color(getattr(h, get)()) if hasattr(h, get) else None
+        if c:
+            return c
+    return None
+
+
+def _stacks(artist):
+    """Does the artist stack anything vertically inside itself?"""
+    return any(isinstance(c, mpl.offsetbox.VPacker) or _stacks(c) for c in artist.get_children())
+
+
+def _text_lines(artist):
+    """The lines of text an artist draws inside itself, each a list of its
+    pieces as (text, colour). Texts packed side by side in an `HPacker` read
+    as one line, as the coloured words of a key do; any other text is a
+    line of its own."""
+    if isinstance(artist, mpl.text.Text):
+        return [[(artist.get_text(), _color(artist.get_color()))]] if artist.get_visible() else []
+    kids = [c for c in artist.get_children() if c.get_visible()]
+    lines = [line for c in kids for line in _text_lines(c)]
+    if isinstance(artist, mpl.offsetbox.HPacker) and not _stacks(artist):
+        return [[p for line in lines for p in line]] if lines else []
+    return lines
+
+
+def _line_note(parts):
+    """One line of boxed text as a note: its words, with its colour when it
+    has one, and each coloured piece when its words differ in colour."""
+    note = {'text': ' '.join(''.join(t for t, _ in parts).split())}
+    pieces = [(' '.join(t.split()), c) for t, c in parts if t.strip()]
+    colors = {c for _, c in pieces}
+    if len(colors) == 1:
+        note['color'] = colors.pop()
+    elif colors:
+        note['parts'] = [{'text': t, 'color': c} for t, c in pieces]
+    return note
 
 
 def _cap(s):
@@ -403,6 +459,36 @@ def _panel(ax):
             points.append({'text': txt, 'x': X(x), 'y': Y(y), 'color': color})
         else:
             notes.append({'text': txt, 'color': color})
+
+    # Text drawn inside other artists: a key packed from offset boxes,
+    # `AnchoredText`, an annotation box. A box pinned to a data point names
+    # that point, as an annotation does.
+    for a in ax.artists:
+        if not a.get_visible():
+            continue
+        lines = [n for n in map(_line_note, _text_lines(a)) if n['text']]
+        if not lines:
+            continue
+        if isinstance(a, mpl.offsetbox.AnnotationBbox) and a.xycoords == 'data':
+            x, y = a.xy
+            colors = {n.get('color') for n in lines}
+            points.append({'text': ' '.join(n['text'] for n in lines), 'x': X(x), 'y': Y(y),
+                           'color': colors.pop() if len(colors) == 1 else None})
+        else:
+            notes += lines
+    # A legend's entries are the labels of the series they stand for, which
+    # the series already carry; an entry naming no series is a note in its
+    # handle's colour, so it names an unlabelled series as a key entry does.
+    leg = ax.get_legend()
+    if leg is not None and leg.get_visible():
+        title = ' '.join(leg.get_title().get_text().split())
+        if title and leg.get_title().get_visible():
+            notes.append({'text': title})
+        labels = {' '.join(s['label'].split()) for s in series if s.get('label')}
+        for t, h in zip(leg.get_texts(), leg.legend_handles, strict=False):
+            txt = ' '.join(t.get_text().split())
+            if txt and t.get_visible() and txt not in labels:
+                notes.append({'text': txt, 'color': _handle_color(h)})
 
     def near(a, b):
         return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))

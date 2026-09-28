@@ -174,6 +174,67 @@ def test_key_entries_name_unlabelled_series_by_colour():
     assert all(s['named_by'] == 'key' for s in p['series'])
 
 
+def test_text_inside_offset_boxes_is_read_line_by_line():
+    """A key whose words differ in colour is packed from offset boxes, since
+    `key` colours whole lines. Each of its lines is a note, and a line in
+    one colour names the unlabelled series drawn in it. Anchored text is a
+    note too, and an annotation box pinned to a data point names the point."""
+    from matplotlib.offsetbox import (
+        AnchoredOffsetbox,
+        AnchoredText,
+        AnnotationBbox,
+        HPacker,
+        TextArea,
+        VPacker,
+    )
+
+    def row(parts):
+        return HPacker(children=[TextArea(t, textprops={'color': c}) for t, c in parts],
+                       pad=0, sep=0, align='baseline')
+    fig, ax = plt.subplots()
+    ax.scatter([1, 2], [1, 2], color=ps.PALETTE[0])
+    rows = [row([('●  ', ps.PALETTE[0]), ('observed', ps.PALETTE[0])]),
+            row([('without the ', ps.GREY['text']), ('workers', ps.PALETTE[1]),
+                 (' term', ps.GREY['text'])])]
+    ax.add_artist(AnchoredOffsetbox(loc='upper left', frameon=False,
+                                    child=VPacker(children=rows, align='left', pad=0, sep=4)))
+    ax.add_artist(AnchoredText('source: INE', loc='lower right'))
+    ax.add_artist(AnnotationBbox(TextArea('peak'), (2, 2), xybox=(20, 0),
+                                 boxcoords='offset points'))
+    d = digest.describe(fig)
+    p = d['panels'][0]
+    grey, first, second = (digest._color(c) for c in (ps.GREY['text'], *ps.PALETTE[:2]))
+    assert p['notes'][:2] == [
+        {'text': '● observed', 'color': first},
+        {'text': 'without the workers term',
+         'parts': [{'text': 'without the', 'color': grey}, {'text': 'workers', 'color': second},
+                   {'text': 'term', 'color': grey}]}]
+    assert p['notes'][2]['text'] == 'source: INE' and len(p['notes']) == 3
+    assert [(q['text'], q['x'], q['y']) for q in p['points']] == [('peak', 2, 2)]
+    assert (p['series'][0]['label'], p['series'][0]['named_by']) == ('● observed', 'key')
+    text = '\n'.join(digest.markdown(d, 'fig-k'))
+    assert 'Notes: ● observed; without the workers term; source: INE.' in text
+    assert 'Labelled points: peak (2, 2).' in text
+
+
+def test_legend_entries_are_the_series_labels_and_are_not_repeated():
+    """A legend shows the labels its series already carry, so its entries
+    add nothing, only its title. Entries given to unlabelled series
+    (`ax.legend(['A', 'B'])`) name them through their handles' colours."""
+    fig, (a, b) = plt.subplots(1, 2)
+    a.plot([1, 2], [1, 2], label='Portugal')
+    a.bar([1, 2], [1, 2], label='firms')
+    a.legend(title='Region')
+    b.plot([1, 2], [1, 2])
+    b.plot([1, 2], [2, 1])
+    b.legend(['A', 'B'])
+    pa, pb = digest.describe(fig)['panels']
+    assert sorted(s['label'] for s in pa['series']) == ['Portugal', 'firms']
+    assert pa['notes'] == [{'text': 'Region'}]
+    assert [(s['label'], s.get('named_by')) for s in pb['series']] == [('A', 'key'), ('B', 'key')]
+    assert [n['text'] for n in pb['notes']] == ['A', 'B']
+
+
 def test_date_axes_read_as_iso_dates_and_twins_are_marked():
     fig, ax = plt.subplots()
     days = [dt.date(2000, 1, 1), dt.date(2001, 7, 1)]
