@@ -78,9 +78,17 @@ study or a profile, each with `ps.refline(ax, 0)`.
   including a key packed from offset boxes (`TextArea`s in an
   `AnchoredOffsetbox`, for a key with only some words coloured) or a
   legend, each counted as one label. It tests text against other text,
-  against lines drawn with `plot`, `hlines` or `vlines`, and against the
-  figure's edge; text over scatter markers, bars or arrows passes, so look
-  at those.
+  the figure's edge, lines (`plot`, `hlines`, `vlines`), scatter markers
+  at their drawn size, and the drawn outlines of filled shapes: bars,
+  arrows, rectangles, polygons and bands.
+- A label may sit wholly inside a shape or clear of it, never across its
+  edge, unless it is pinned in that shape: an annotation anchored, or a
+  text positioned, in data coordinates inside the shape or on its edge. So
+  a value at its bar's end (`ax.bar_label`) or inside its bar passes, and a
+  label straddling two bars does not. Shaded spans (`shade`, `axvspan`) and
+  reference rules are furniture any label may cross; heatmap cells and
+  images are not measured. The placement helpers dodge what the check
+  measures.
 - With `post-render: python -m plotsmith.digest post-render` in the
   project's `_quarto.yml`, `render-digest where <document>` names the folder
   holding the rendered document's figures as text (`outputs.md`, a CSV per

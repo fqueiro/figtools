@@ -598,6 +598,129 @@ def test_collisions_measures_a_key_packed_from_offset_boxes(case, found):
     plt.close(fig)
 
 
+def _unit_panel():
+    """A panel whose data coordinates are its axes fractions."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    return fig, ax
+
+
+def _kinds(fig):
+    return {kind for _, kind, _ in ps.collisions(fig)}
+
+
+@pytest.mark.parametrize('where, found', [('upper left', set()),
+                                          ('center', {'label/shape'})])
+def test_collisions_measures_an_arrow_by_its_outline(where, found):
+    """A key beside its arrows, the case that ran a key into them at the
+    slide size. A diagonal arrow leaves most of its bounding box empty: a
+    key there is clear, one across the shaft is not."""
+    fig, ax = _unit_panel()
+    ax.arrow(0.1, 0.1, 0.8, 0.8, width=0.03, length_includes_head=True,
+             color=ps.PALETTE[1], lw=0)
+    _packed_key(ax, loc=where)
+    assert _kinds(fig) == found
+    plt.close(fig)
+
+
+def test_a_label_may_sit_on_its_own_bar_but_not_across_another():
+    """Values written at their bars' ends (`bar_label`) and inside a bar are
+    pinned to the bar they name, so they belong to it; a label placed
+    between two bars, across both edges, belongs to neither."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    bars = ax.bar([0, 1, 2], [3, 5, 4], width=0.6)
+    ax.set_ylim(0, 6)
+    ax.bar_label(bars)
+    ax.text(1, 2.5, 'inside', ha='center', va='center')
+    assert ps.collisions(fig) == []
+    ax.text(0.5, 2.0, 'between the two bars', ha='center', va='center')
+    hits = ps.collisions(fig)
+    assert {kind for _, kind, _ in hits} == {'label/shape'}
+    assert all(msg.startswith("'between the two bars'") for _, _, msg in hits)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('shape, found', [('around the key', set()),
+                                          ('under its edge', {'label/shape'})])
+def test_a_key_may_sit_wholly_inside_a_shape_but_not_across_its_edge(shape, found):
+    """A key has no anchor, so only its extent decides: inside a pale
+    rectangle it is written on it, across a polygon's edge it is not."""
+    fig, ax = _unit_panel()
+    if shape == 'around the key':
+        ax.add_patch(matplotlib.patches.Rectangle((0, 0.4), 0.9, 0.6,
+                                                  color=ps.GREY['shade']))
+    else:
+        ax.fill([0.3, 0.6, 0.45], [0.2, 0.2, 0.95], color=ps.PALETTE[2])
+    _packed_key(ax, loc='upper left')
+    assert _kinds(fig) == found
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('size, found', [(36, set()), (400, {'label/marker'})])
+def test_collisions_measures_markers_at_their_drawn_size(size, found):
+    """A note 8 points above a dot's centre clears a default-sized dot (3
+    points across the radius) and not one of 400 square points (10)."""
+    fig, ax = _unit_panel()
+    ax.scatter([0.5], [0.5], s=size)
+    ax.annotate('a note', xy=(0.5, 0.5), xycoords='axes fraction',
+                xytext=(0, 8), textcoords='offset points',
+                ha='center', va='bottom')
+    assert _kinds(fig) == found
+    plt.close(fig)
+
+
+def test_point_labels_clear_large_markers_their_check_measures():
+    """`label_points` dodges markers at their drawn size, so its labels pass
+    the check that measures them so."""
+    fig, ax = _unit_panel()
+    ax.scatter([0.3, 0.36, 0.6], [0.5, 0.5, 0.5], s=400)
+    ps.label_points(ax, [0.3, 0.6], [0.5, 0.5], ['left', 'right'],
+                    avoid=[(0.36, 0.5)])
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('y, found', [(0.9, set()),                # clear of it
+                                      (0.47, set()),               # wholly inside
+                                      (0.7, {'label/shape'})])     # across the top
+def test_collisions_measures_a_band_by_its_edge(y, found):
+    fig, ax = _unit_panel()
+    ax.plot([0, 1], [0.55, 0.55], label='level')
+    ps.band(ax, [0, 1], [0.4, 0.4], [0.7, 0.7])
+    ax.text(0.3, y, 'a note', transform=ax.transAxes, va='center')
+    # pinned inside the band, a label is the band's own and may cross its edge
+    ax.annotate('its band', xy=(0.7, 0.68), xytext=(0, 0),
+                textcoords='offset points', va='bottom')
+    assert _kinds(fig) == found
+    plt.close(fig)
+
+
+def test_a_label_may_cross_a_shaded_span():
+    """Spans are background furniture, like reference rules."""
+    fig, ax = _unit_panel()
+    ps.shade(ax, 0.2, 0.4)
+    ax.text(0.4, 0.5, 'across the span', ha='center', va='center')
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_key_moves_to_a_corner_the_bars_leave_free():
+    """The corner search dodges filled shapes as the check measures them:
+    the tall bar fills the upper left, so the key goes upper right."""
+    ps.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.bar([0, 1, 2, 3], [9, 2, 2, 2], color=[ps.PALETTE[0]] * 4)
+    ax.set_ylim(0, 10)
+    anns = ps.key(ax, [('observed', ps.PALETTE[0]), ('modelled', ps.PALETTE[1])])
+    fig.canvas.draw()
+    assert (anns[0].get_ha(), anns[0].get_va()) == ('right', 'top')
+    assert ps.collisions(fig) == []
+    plt.close(fig)
+
+
 def test_key_entries_clear_each_other_in_a_small_panel():
     """The grid-of-small-multiples case: the step must come from measured
     text, or big type in a little panel overprints the stack."""

@@ -515,25 +515,128 @@ def _pad_box(box, pad):
                              box.x1 + pad, box.y1 + pad)
 
 
-def _marker_boxes(ax, size=3.0):
-    """Small boxes around plotted markers, in axes fraction.
+def _name(artist):
+    """An artist's label as the figure's reader would know it; 'unlabelled'
+    for matplotlib's own '_'-prefixed ones."""
+    lab = str(artist.get_label() or '')
+    return 'unlabelled' if not lab or lab.startswith('_') else lab
+
+
+def _markers(ax):
+    """Scatter markers at their drawn size, one entry per scatter: (name,
+    whether the axes clip it, centres (N, 2), boxes (N, 4) as x0, y0, x1,
+    y1), all in axes fraction.
 
     Scatters and dot plots draw their data as a collection rather than a
-    line, so testing lines alone would let a label land on a point.
+    line, so testing lines alone would let a label land on a point. A
+    marker's size is its area in points squared, and its path is drawn at
+    the square root of that in points, so a large dot is measured large.
     """
     ap = ax.get_window_extent()
-    unit = size * ax.figure.dpi / 72
-    ux, uy = unit / ap.width, unit / ap.height
+    unit = ax.figure.dpi / 72
     out = []
     for coll in ax.collections:
-        if not isinstance(coll, mpl.collections.PathCollection):
+        if not isinstance(coll, mpl.collections.PathCollection) \
+                or not coll.get_visible():
             continue
-        off = coll.get_offsets()
-        if off is None or len(off) == 0:
+        off = np.asarray(coll.get_offsets(), float)
+        if off.size == 0:
             continue
-        for p in _to_axes(ax, np.asarray(off, float)):
-            out.append(Bbox.from_bounds(p[0] - ux, p[1] - uy, 2 * ux, 2 * uy))
+        k = np.arange(len(off))
+        px = coll.get_offset_transform().transform(off)
+        ext = np.array([p.get_extents().extents for p in coll.get_paths()])
+        ext = ext[k % len(ext)]
+        sizes = np.asarray(coll.get_sizes(), float)
+        # With no sizes the paths are drawn as they are, in pixels.
+        scale = (np.sqrt(sizes[k % len(sizes)]) * unit if len(sizes)
+                 else np.ones(len(off)))[:, None]
+        box = np.column_stack([px, px]) + ext * scale
+        ok = np.isfinite(box).all(axis=1)
+        origin = np.array([ap.x0, ap.y0, ap.x0, ap.y0])
+        span = np.array([ap.width, ap.height, ap.width, ap.height])
+        out.append((_name(coll), coll.get_clip_on(),
+                    (px[ok] - origin[:2]) / span[:2],
+                    (box[ok] - origin) / span))
     return out
+
+
+def _marker_boxes(ax, size=3.0):
+    """Boxes around plotted markers, in axes fraction, at their drawn size
+    and reaching at least `size` points from each centre, for placement to
+    dodge. The floor keeps small markers from being passed too closely;
+    the drawn size keeps a large dot from being passed at all, which
+    `collisions` would refuse."""
+    ap = ax.get_window_extent()
+    ux = size * ax.figure.dpi / 72 / ap.width
+    uy = size * ax.figure.dpi / 72 / ap.height
+    return [Bbox.from_extents(min(x0, cx - ux), min(y0, cy - uy),
+                              max(x1, cx + ux), max(y1, cy + uy))
+            for _, _, centres, boxes in _markers(ax)
+            for (cx, cy), (x0, y0, x1, y1) in zip(centres, boxes)]
+
+
+def _is_span(artist, ax):
+    """Is the artist a shaded span (`shade`, `axvspan`, `axhspan`)? Spans
+    are drawn in the axis-blended transforms, data along one axis and the
+    full panel along the other."""
+    tr = mpl.artist.Artist.get_transform(artist)
+    return (tr is ax.get_xaxis_transform(which='grid')
+            or tr is ax.get_yaxis_transform(which='grid'))
+
+
+def _shapes(ax):
+    """Filled shapes on `ax`, each as (name, whether the axes clip it,
+    outline in axes fraction): patches (bars, arrows, rectangles, polygons)
+    and polygon collections (`fill_between`, `band`).
+
+    The outline is the drawn path, so a diagonal arrow occupies its shaft
+    and head and not the empty corners of its bounding box. Shaded spans
+    are furniture a label may sit across, as rules are, and are left out;
+    so is a collection repeating one shape at many offsets (`hexbin`), a
+    grid of cells rather than a shape.
+    """
+    inv = ax.transAxes.inverted()
+    out = []
+    for pa in ax.patches:
+        if pa.get_visible() and not _is_span(pa, ax):
+            path = pa.get_transform().transform_path(pa.get_path())
+            out.append((_name(pa) if _name(pa) != 'unlabelled'
+                        else type(pa).__name__, pa.get_clip_on(),
+                        inv.transform_path(path)))
+    for coll in ax.collections:
+        if (not coll.get_visible() or len(coll.get_offsets()) > 1
+                or not isinstance(coll, (mpl.collections.PolyCollection,
+                                         mpl.collections.PatchCollection))):
+            continue
+        name = (_name(coll) if _name(coll) != 'unlabelled'
+                else type(coll).__name__)
+        tr = coll.get_transform()
+        out += [(name, coll.get_clip_on(),
+                 inv.transform_path(tr.transform_path(p)))
+                for p in coll.get_paths()]
+    return out
+
+
+def _meets(box, shape):
+    """Does a box (axes fraction) cross a shape's edge or cover the whole
+    shape? A box wholly inside a shape is text written on it, which is
+    allowed. Where the axes clip a shape, only the part of the box inside
+    the panel can meet it."""
+    _, clipped, outline = shape
+    if clipped:
+        box = Bbox.intersection(box, Bbox.unit())
+        if box is None:
+            return False
+    return outline.intersects_bbox(box, filled=False)
+
+
+def _holds(shape, point, tol=0.004):
+    """Does a shape hold `point` (axes fraction), inside it or on its edge?
+    A label anchored there belongs to the shape: a value written on its
+    bar, a direct label at its line's end inside that line's band."""
+    return shape[2].intersects_bbox(
+        Bbox.from_bounds(point[0] - tol, point[1] - tol, 2 * tol, 2 * tol),
+        filled=True)
 
 
 def _crosses(rect, curve):
@@ -543,11 +646,13 @@ def _crosses(rect, curve):
          & (curve[:, 1] >= rect.y0) & (curve[:, 1] <= rect.y1)).any())
 
 
-def _hits(box, boxes, curves, pad=0.006):
-    """Does `box` (axes fraction) touch another label or cross a data line?"""
+def _hits(box, boxes, curves, pad=0.006, shapes=()):
+    """Does `box` (axes fraction) touch another label or a marker, cross a
+    data line, or cross the edge of a filled shape?"""
     r = _pad_box(box, pad)
     return (any(r.overlaps(b) for b in boxes)
-            or any(_crosses(r, c) for c in curves))
+            or any(_crosses(r, c) for c in curves)
+            or any(_meets(r, s) for s in shapes))
 
 
 def _box(artist, renderer, inv):
@@ -663,12 +768,18 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
         return Bbox.from_bounds(pos[i][0] + off[i][0], y + off[i][1],
                                 boxes[i].width, heights[i])
 
+    shapes = _shapes(ax)
+
     def obstacles(i):
         # The label's own line runs right up to the anchor it is placed
         # against, so that stretch is not something to dodge.
         a = anchors[i]
         return [c[np.hypot(c[:, 0] - a[0], c[:, 1] - a[1]) > 0.025]
                 for c in curves]
+
+    def walls(i):
+        # Nor is a shape holding the line's end, such as the line's band.
+        return [s for s in shapes if not _holds(s, anchors[i])]
 
     final = list(want)
     # Margin labels first: they are already spread, so they settle at their
@@ -684,14 +795,14 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
     for i in sorted(at_edge, key=lambda i: want[i]):
         step = max(heights[i] * 1.05, 0.028)
         offsets = [0.0] + [s * k * step for k in range(1, 13) for s in (1, -1)]
-        near = obstacles(i)
+        near, own = obstacles(i), walls(i)
         lo = max(floor, 0.005)
         final[i] = max(want[i], lo + heights[i] / 2)
         for dy in offsets:
             y = want[i] + dy
             if y - heights[i] / 2 < lo or y + heights[i] / 2 > 0.995:
                 continue
-            if not _hits(rect(i, y), blocked, near):
+            if not _hits(rect(i, y), blocked, near, shapes=own):
                 final[i] = y
                 break
         blocked.append(rect(i, final[i]))
@@ -701,12 +812,12 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
             continue
         step = max(heights[i] * 1.05, 0.028)
         offsets = [0.0] + [s * k * step for k in range(1, 13) for s in (1, -1)]
-        near = obstacles(i)
+        near, own = obstacles(i), walls(i)
         for dy in offsets:
             y = want[i] + dy
             if y - heights[i] / 2 < 0.005 or y + heights[i] / 2 > 0.995:
                 continue
-            if not _hits(rect(i, y), blocked, near):
+            if not _hits(rect(i, y), blocked, near, shapes=own):
                 final[i] = y
                 break
         blocked.append(rect(i, final[i]))
@@ -926,11 +1037,14 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
     sizes = [_box(a, renderer, inv).size for a in anns]
     at = _to_axes(ax, pts)
 
-    # A label must not cover a point either, its own or an unlabelled one.
+    # A label must not cover a point either, its own or an unlabelled one,
+    # nor a scatter's marker at its drawn size.
     marks = [Bbox.from_bounds(p[0] - 2.5 * ux, p[1] - 2.5 * uy,
                               5 * ux, 5 * uy)
              for p in _to_axes(ax, list(pts) + list(cloud))]
+    marks += _marker_boxes(ax, 2.5)
     blocked = [_box(t, renderer, inv) for t in fixed if t.get_visible()]
+    shapes = _shapes(ax)
 
     # Greedy placement gives whoever goes first the closest spot, so let the
     # points in a cluster choose before the isolated ones, which still have
@@ -942,6 +1056,8 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
         ann = anns[i]
         w, h = sizes[i]
         best = None
+        # a shape holding the point (the bar or band it belongs to) is its own
+        own = [s for s in shapes if not _holds(s, at[i])]
         for k in (1.0, 2.0, 3.4, 5.0, 7.0, 9.5, 12.0, 15.0):
             for ha, va, sx, sy in _SPOTS:
                 dx, dy = sx * k * offset * ux, sy * k * offset * uy
@@ -953,7 +1069,7 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
                 if box.x0 < 0.002 or box.x1 > 0.998 or \
                         box.y0 < 0.002 or box.y1 > 0.998:
                     continue
-                if not _hits(box, blocked + marks, [], pad=0.005):
+                if not _hits(box, blocked + marks, [], pad=0.005, shapes=own):
                     best = (ha, va, sx * k * offset, sy * k * offset, k)
                     break
             if best:
@@ -1055,12 +1171,14 @@ def _place_key(renderer, ax, anns, entries, lineheight, order, fixed):
               + _collection_curves(ax) + _rule_curves(ax))
     others = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
               + _marker_boxes(ax))
+    shapes = _shapes(ax)
 
     for loc in order:
         ha, va, x0, y0, step = _corner(loc, w, h, lineheight, len(anns))
         left = x0 if ha == 'left' else x0 - w
         top = y0 if va == 'top' else y0 + max(b.height for b in boxes)
-        if not _hits(Bbox.from_bounds(left, top - h, w, h), others, curves):
+        if not _hits(Bbox.from_bounds(left, top - h, w, h), others, curves,
+                     shapes=shapes):
             break
     else:
         loc = order[0]
@@ -1088,8 +1206,9 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     `entries` is a sequence of (text, colour) pairs. `loc` names a corner, or
     'auto' (the default) to use the first corner clear of the data: plotted
     lines, collection strokes (dot-plot stems, dumbbell connectors,
-    pointrange intervals), markers, and reference rules, which a short
-    direct label may sit across but a key block may not. The line step is
+    pointrange intervals), markers, the edges of filled shapes (bars,
+    arrows, bands), and reference rules, which a short direct label may sit
+    across but a key block may not. The line step is
     measured from the drawn entries, so it tracks the font and panel size;
     `lineheight` (axes fraction per entry) overrides it.
 
@@ -1167,13 +1286,15 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False):
     curves = [_curve(ax, ln) for ln in _data_lines(ax)] + _collection_curves(ax)
     others = ([_box(t, renderer, inv) for t in fixed if t.get_visible()]
               + _marker_boxes(ax))
+    shapes = _shapes(ax)
     j = 0 if axis == 'y' else 1
     here = ann.xy[j]
     for w in order:
         d = [0.0, 0.0]
         d[j] = w - here
         if not _hits(Bbox.from_bounds(box.x0 + d[0], box.y0 + d[1],
-                                      box.width, box.height), others, curves):
+                                      box.width, box.height), others, curves,
+                     shapes=shapes):
             break
     else:
         # The data fills the panel wherever this label could go. Make room at
@@ -1388,8 +1509,9 @@ def _drawn_texts(fig):
 
 
 def collisions(fig, pad=0.004):
-    """Report labels that overlap another label or sit on a plotted line,
-    and text that runs off the figure.
+    """Report labels that overlap another label, sit on a plotted line or
+    marker, or cross the edge of a filled shape, and text that runs off the
+    figure.
 
     Direct labelling fails silently: a label landing on a line, or on another
     label, still renders and still raises nothing, so it survives until
@@ -1405,8 +1527,20 @@ def collisions(fig, pad=0.004):
     measured as the union of its texts: its pieces abut by construction, so
     only the block they make can collide with anything.
 
+    Filled shapes are measured by their drawn outline: bars, arrows,
+    rectangles and polygons, and bands (`fill_between`, `band`). A label may
+    sit wholly inside a shape, which is text written on it, or clear of it,
+    but not across its edge. A label pinned inside a shape or on its edge
+    (an annotation's anchor or a plain text's position in data coordinates)
+    belongs to that shape, and may cross that shape's edge: a value written
+    at its bar's end, a direct label at its line's end inside the line's own
+    band. Shaded spans (`shade`, `axvspan`) are furniture a label may cross,
+    as reference rules are. Scatter markers are measured at their drawn
+    size, with the same allowance near a label's own anchor as lines.
+
     Returns a list of (panel, kind, description) tuples, empty when clean.
-    `kind` is 'label/label', 'label/line' or 'text/edge'.
+    `kind` is 'label/label', 'label/line', 'label/shape', 'label/marker' or
+    'text/edge'.
     """
     fig.canvas.draw()
     r = _renderer(fig)
@@ -1438,12 +1572,19 @@ def collisions(fig, pad=0.004):
         anchors = [_to_axes(ax, [t.xy])[0]
                    if isinstance(t, mpl.text.Annotation)
                    and t.xycoords == 'data' else None for t in texts]
+        # Where a text is pinned in the data, which decides the shape it
+        # belongs to: an annotation's anchor, or a plain text's position.
+        homes = [a if a is not None
+                 else _to_axes(ax, [t.get_position()])[0]
+                 if t.get_transform() is ax.transData else None
+                 for t, a in zip(texts, anchors)]
         for _, parts in _text_blocks(ax.get_children()):
             boxes.append(Bbox.union(
                 [mpl.text.Text.get_window_extent(t, r) for t in parts]
             ).transformed(inv))
             flat.append(' '.join(' '.join(t.get_text().split()) for t in parts))
             anchors.append(None)
+            homes.append(None)
 
         for i, j in combinations(range(len(boxes)), 2):
             if _pad_box(boxes[i], pad).overlaps(boxes[j]):
@@ -1460,6 +1601,27 @@ def collisions(fig, pad=0.004):
                 if _crosses(_pad_box(boxes[i], pad), away):
                     found.append((n, 'label/line',
                                   f'{flat[i]!r} over the {name!r} line'))
+
+        shapes, markers = _shapes(ax), _markers(ax)
+        for i, (anchor, home) in enumerate(zip(anchors, homes)):
+            box = _pad_box(boxes[i], pad)
+            for s in shapes:
+                if (home is None or not _holds(s, home)) and _meets(box, s):
+                    what = f'{flat[i]!r} across the edge of the {s[0]!r} shape'
+                    found.append((n, 'label/shape', what))
+            inside = Bbox.intersection(box, Bbox.unit())
+            for name, clipped, centres, marks in markers:
+                b = inside if clipped else box
+                if b is None:
+                    continue
+                hit = ((marks[:, 0] < b.x1) & (marks[:, 2] > b.x0)
+                       & (marks[:, 1] < b.y1) & (marks[:, 3] > b.y0))
+                if anchor is not None:
+                    hit &= np.hypot(centres[:, 0] - anchor[0],
+                                    centres[:, 1] - anchor[1]) > 0.025
+                if hit.any():
+                    found.append((n, 'label/marker',
+                                  f'{flat[i]!r} over the {name!r} markers'))
     return found
 
 
