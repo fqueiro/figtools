@@ -107,7 +107,8 @@ uv run fig-check code adoption_lifecycle  # one document
 ```
 
 Runs each document's code the way its renderer would (the `# %%` cells of a
-percent-format `.py`, `.qmd` python chunks, `.ipynb` code cells) and
+percent-format `.py`, `.qmd` python chunks, `.ipynb` code cells, in the
+folder Quarto runs the document in) and
 measures every figure with `collisions`; exits non-zero on any overlap or
 any text off the figure; the check replaces eyeballing the rendered
 figures. A `.py` counts as a document when Quarto would render it, that is

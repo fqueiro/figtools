@@ -85,9 +85,12 @@ study or a profile, each with `ps.refline(ax, 0)`.
 
 ## Checking and reading figures
 
-- `uv run fig-check code <document>` runs a document and fails on any
-  overlapping or clipped label; a plain script uses
-  `assert not ps.collisions(fig)`.
+- `uv run fig-check code <document>` runs a document (its name without the
+  extension, in the folder given first) and fails on any overlapping or
+  clipped label; a plain script uses `assert not ps.collisions(fig)`. It
+  runs the document in the folder Quarto would, its own unless the
+  project's `_quarto.yml` sets `execute-dir: project`, so it can be called
+  from anywhere.
 - The check, here and in `save`, measures every text the figure draws,
   including a key packed from offset boxes (`TextArea`s in an
   `AnchoredOffsetbox`, for a key with only some words coloured) or a

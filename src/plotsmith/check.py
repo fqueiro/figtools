@@ -18,6 +18,9 @@ name that matches no document is an error, as is a directory without any.
 Each figure is drawn at the size the html render gives it: `fig-width` and
 `fig-height` from the document's front matter, the project's `_quarto.yml`
 and any `_metadata.yml`, merged as Quarto merges them, else Quarto's 7 by 5.
+Each document runs in the folder Quarto runs it in, its own unless the
+project's `_quarto.yml` sets `execute-dir: project`, so a path it reads
+relative to that folder resolves wherever the check is called from.
 Exits non-zero if anything overlaps, so it can gate a commit. `--figs DIR`
 writes each figure to DIR as a png, which is how to see what a reported
 overlap looks like.
@@ -27,6 +30,7 @@ import argparse
 import io
 import json
 import linecache
+import os
 import re
 import subprocess
 import sys
@@ -159,6 +163,24 @@ def figsize(doc, prose):
     return float(got.get('fig-width', 7)), float(got.get('fig-height', 5))
 
 
+def workdir(doc):
+    """The folder Quarto runs a document's code in.
+
+    The document's own folder, Quarto's default, unless the `_quarto.yml`
+    of the project it sits in sets `execute-dir: project`, which runs it
+    in the project's folder. A document that reads its data relative to
+    the working folder finds it only there.
+    """
+    for here in (doc.parent, *doc.parent.parents):
+        for name in ('_quarto.yml', '_quarto.yaml'):
+            path = here / name
+            if path.exists():
+                loaded = mapping(yaml.safe_load(path.read_text(encoding='utf-8')), path)
+                project = loaded.get('project') or {}
+                return here if project.get('execute-dir') == 'project' else doc.parent
+    return doc.parent
+
+
 def parse(doc):
     """A document's prose, where its front matter lives, and its code cells.
 
@@ -201,6 +223,16 @@ def check(doc, figs=None):
     # importing.
     ns = {'__name__': '__main__', 'display': lambda *a, **k: None,
           'get_ipython': lambda: None}
+    caller = Path.cwd()
+    os.chdir(workdir(doc))
+    try:
+        return run(doc, bodies, ns, figs)
+    finally:
+        os.chdir(caller)
+
+
+def run(doc, bodies, ns, figs):
+    """Execute a document's cells in `ns`, measuring each figure as it closes."""
     found, n = [], 0
     for i, body in enumerate(bodies):
         with warnings.catch_warnings(), redirect_stdout(io.StringIO()):
@@ -267,6 +299,8 @@ def main(argv=None):
     targets = [doc for doc in found if not a.names or doc.stem in a.names]
 
     if a.figs:
+        # Absolute, since each document runs from its own working folder.
+        a.figs = a.figs.resolve()
         a.figs.mkdir(parents=True, exist_ok=True)
 
     if a.worker:

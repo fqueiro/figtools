@@ -120,6 +120,35 @@ def test_check_lets_a_cell_read_the_source_of_its_functions(tmp_path):
     assert (n, found) == (1, [])
 
 
+READS_DATA = QMD.replace('ps.setup()', "ps.setup()\nopen('data.txt').read()")
+
+
+def test_check_runs_a_document_in_its_own_folder(tmp_path, monkeypatch):
+    """Quarto runs a document in its own folder, so a document reads its data
+    relative to it; called from the project root, the check must too."""
+    (tmp_path / '_quarto.yml').write_text('project:\n  type: default\n', encoding='utf-8')
+    doc = tmp_path / 'code' / 'notes' / 'doc.qmd'
+    doc.parent.mkdir(parents=True)
+    doc.write_text(READS_DATA, encoding='utf-8')
+    (doc.parent / 'data.txt').write_text('x', encoding='utf-8')
+    monkeypatch.chdir(tmp_path)
+    assert fc.check(doc) == (1, [])
+    assert fc.workdir(doc) == doc.parent
+    assert fc.Path.cwd() == tmp_path      # the caller's folder comes back
+
+
+def test_check_runs_a_document_in_the_project_folder_when_quarto_does(tmp_path, monkeypatch):
+    (tmp_path / '_quarto.yml').write_text('project:\n  execute-dir: project\n', encoding='utf-8')
+    doc = tmp_path / 'code' / 'doc.qmd'
+    doc.parent.mkdir()
+    doc.write_text(READS_DATA, encoding='utf-8')
+    (tmp_path / 'data.txt').write_text('x', encoding='utf-8')
+    monkeypatch.chdir(doc.parent)
+    assert fc.workdir(doc) == tmp_path
+    assert fc.check(doc) == (1, [])
+    assert fc.Path.cwd() == doc.parent
+
+
 def test_percent_splits_cells_the_way_quarto_does():
     parts = list(fc.percent('import os\n' + PY))
     assert [kind for kind, _ in parts] == ['markdown', 'markdown', 'code',
