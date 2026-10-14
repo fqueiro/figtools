@@ -1,7 +1,7 @@
 # plotsmith
 
-Matplotlib figure style for research documents, following Kieran Healy's
-*Data Visualization* practices: Tol vibrant palette in fixed order, direct
+Matplotlib figure style for research documents, inspired by Kieran Healy's
+*Data Visualization*: Tol vibrant palette in fixed order, direct
 labels hanging in the margin beyond the panel instead of legends (with
 collision-avoiding placement and hairline leaders), gridlines only on the
 measured axis and only across the data, no frame at all (no spines, no tick
@@ -9,15 +9,21 @@ marks), annotated reference lines and bands, Cleveland dot plots over bars,
 and a measurable check that no label sits on a line, a marker, or another
 label.
 
+![Two panels drawn with plotsmith: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](docs/readme_figure.png)
+
+*Synthetic data, drawn by [docs/readme_figure.py](docs/readme_figure.py).*
+
 ## Install
 
 ```
 uv add git+https://github.com/fqueiro/plotsmith
 ```
 
-Each project pins the commit it resolved in its `uv.lock`, so the library can
-evolve without silently changing the figures of a finished paper; upgrade a
-project deliberately with `uv lock --upgrade-package plotsmith`.
+or `pip install git+https://github.com/fqueiro/plotsmith`. Requires Python
+3.11 or later. A uv project pins the commit it resolved in its `uv.lock`, so
+the library can evolve without silently changing the figures of a finished
+paper; upgrade a project deliberately with
+`uv lock --upgrade-package plotsmith`.
 
 ## Use
 
@@ -33,6 +39,9 @@ ps.refline(ax, 1, 'parity')
 ps.label_lines(ax)              # direct labels replace the legend
 ps.save(fig, '../results/figures/fig1')
 ```
+
+`python -m plotsmith` prints a short usage guide; `help(ps.<function>)`
+gives each function's full reference.
 
 `setup` also turns on matplotlib's constrained layout. The direct labels
 hang beyond the panel, and the layout engine measures the margin they need
@@ -50,6 +59,12 @@ whether a panel lands on that step depends on how much margin its direct
 labels take, so one longer country name can flip it. An axis of genuinely
 fractional data keeps its halves, and a reference rule at 2020.5 is
 furniture rather than a value the data occupies.
+
+Typography is one knob: `setup(base=...)` puts titles and axis labels at the
+base size and every other piece of text (ticks, line labels, key entries,
+annotations) half a point below, so elements cannot drift apart and a bigger
+deck is `setup(base=13)`, not a retouching session. The default matches
+ggplot's 11pt theme base.
 
 Three house rules the helpers assume. The caption names the quantity, its
 unit and its sign convention, and the reference rule is named on the line
@@ -80,19 +95,6 @@ the PDFs in LaTeX at natural size, with no `width=` option: the figure was
 rendered at the physical size of its destination, so its type lands on the
 page at the exact point size `setup` chose. Scaling at `\includegraphics`
 time is what un-sizes fonts.
-
-## Tests
-
-```
-uv sync
-uv run pytest
-```
-
-Typography is one knob: `setup(base=...)` puts titles and axis labels at the
-base size and every other piece of text (ticks, line labels, key entries,
-annotations) half a point below, so elements cannot drift apart and a bigger
-deck is `setup(base=13)`, not a retouching session. The default matches
-ggplot's 11pt theme base.
 
 Beyond the style: `pointrange` (coefficient profiles, event studies),
 `dotplot(..., ci=)` (horizontal coefficient plots), `binscatter`,
@@ -152,7 +154,7 @@ and one PNG per figure, and a manifest with the render time and a hash of
 the source. `render-digest where <document>` prints the folder;
 `render-digest check <document>` exits 1 when the source changed since the
 render, so a reader knows to render again first. The folder lives outside
-the repository and outside Dropbox. A document rendered to PDF yields its
+the repository. A document rendered to PDF yields its
 figures, and only them, under `pdf/` in the same folder: the LaTeX engine
 copies each figure file's digest into the document, and `render-digest
 figure` on any such PDF prints them all.
@@ -164,3 +166,14 @@ over about 600 cells is thinned to its first, last and extreme rows and
 says so; the CSV keeps every row. Calling `set_matplotlib_formats` after
 `setup()` replaces the wrapped formatter and drops the digest; call `setup()`
 again after it.
+
+## Tests
+
+```
+uv sync
+uv run pytest
+```
+
+## License
+
+MIT; see [LICENSE](LICENSE).

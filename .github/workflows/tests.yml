@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Python with the oldest declared versions of
+          # every dependency, so the floors in pyproject.toml stay true.
+          - python: "3.11"
+            resolution: lowest-direct
+          # The lock file, as the projects that use the library run it.
+          - python: "3.13"
+            resolution: locked
+    name: Python ${{ matrix.python }} (${{ matrix.resolution }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Test with the lock file
+        if: matrix.resolution == 'locked'
+        run: uv run --locked --python ${{ matrix.python }} pytest
+      - name: Test with the oldest declared dependencies
+        if: matrix.resolution == 'lowest-direct'
+        run: uv run --resolution lowest-direct --python ${{ matrix.python }} pytest

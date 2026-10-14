@@ -21,7 +21,7 @@ converts the page's tables and printed output to text, and stamps the lot
 with a hash of the source, so a reader can tell whether the document changed
 since. Everything lands under
 `~/.local/share/render-digests/<project>/<document path>/`, outside the
-repository and outside Dropbox. A document rendered to PDF yields its
+repository. A document rendered to PDF yields its
 figures' digests, read from the document itself since the LaTeX engine
 copies each figure file's entry into it, under `pdf/` in the same folder.
 

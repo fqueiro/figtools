@@ -7,7 +7,7 @@ the work actually uses (time series, dot plots, pointranges, binned and
 labelled scatters), the per-destination export, and the measurement that
 keeps direct labelling honest.
 
-The choices follow Kieran Healy's *Data Visualization* practices:
+The choices are inspired by Kieran Healy's *Data Visualization*:
 
   * One colour-blind-safe categorical palette (Tol vibrant), assigned in a
     fixed order and never cycled, so a colour means the same entity
@@ -228,6 +228,17 @@ class _LinearScale(mpl.scale.LinearScale):
     """
 
     name = 'linear'
+
+    # Matplotlib up to 3.10 hands every scale its axis on construction. From
+    # 3.11 it reads the constructor's signature, leaves the axis out when the
+    # constructor does not ask for it, and warns when it does (the argument
+    # goes in 3.15), so the signature follows the installed version.
+    if mpl.__version_info__[:2] >= (3, 11):
+        def __init__(self):
+            super().__init__()
+    else:
+        def __init__(self, axis):
+            super().__init__(axis)
 
     def set_default_locators_and_formatters(self, axis):
         super().set_default_locators_and_formatters(axis)

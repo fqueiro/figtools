@@ -41,7 +41,7 @@ study or a profile, each with `ps.refline(ax, 0)`.
   itself and fits the slope on every observation.
 - `binscatter(..., controls=)` partials out the controls by dense least
   squares, which suits a few continuous controls. Absorb high-dimensional
-  fixed effects first (with xhdfe) and pass the residuals.
+  fixed effects first and pass the residuals.
 - A Polars null becomes NaN. `binscatter` raises on any; a line breaks at
   one. Drop or fill missing values explicitly first.
 
