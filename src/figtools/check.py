@@ -25,6 +25,11 @@ Quarto runs it in, its own unless the project's `_quarto.yml` sets
 wherever the check is called from. `--figs DIR` writes each figure to DIR
 as a png, which is how to see what a reported overlap looks like.
 
+A figure the document saves with figtools' `save` is measured at each size
+and not written, so a check leaves the document's figure files as they were;
+anything else the document writes (tables, cached results) it writes as a
+render would.
+
 Every document is checked, even after one fails, and the summary names the
 documents with overlaps and the documents that crashed separately. The exit
 code can gate a commit:
@@ -55,6 +60,7 @@ from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
 
+import figtools
 from figtools import collisions
 from figtools.digest import KEY, describe, encode
 
@@ -266,9 +272,13 @@ def check(doc, figs=None):
           'get_ipython': lambda: None}
     caller = Path.cwd()
     os.chdir(workdir(doc))
+    # While the document runs, `save` measures each size and writes nothing,
+    # so a check leaves the figure files the document produces as they were.
+    before, figtools._checking = figtools._checking, True
     try:
         return run(doc, bodies, ns, figs)
     finally:
+        figtools._checking = before
         os.chdir(caller)
 
 

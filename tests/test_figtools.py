@@ -1317,6 +1317,20 @@ def test_a_pickle_naming_code_this_version_lacks_or_holding_no_figure_is_refused
         ft.load(junk)
 
 
+def test_save_under_fig_check_writes_nothing_and_still_refuses_a_bad_figure(
+        tmp_path, monkeypatch):
+    ft.setup()
+    monkeypatch.setattr(ft, '_checking', True)
+    fig = _small_figure()
+    returned = ft.save(fig, tmp_path / 'fig', retouch=True)
+    assert [p.name for p in returned] == ['fig.pdf', 'fig_slides.pdf', 'fig.pkl']
+    assert list(tmp_path.iterdir()) == []
+    fig.text(1.2, 0.5, 'off the edge')
+    with pytest.raises(RuntimeError, match='runs off'):
+        ft.save(fig, tmp_path / 'bad')
+    plt.close(fig)
+
+
 def test_save_takes_targets_from_any_iterable_and_refuses_none_or_a_string(tmp_path):
     """The checks and the writing each pass over `targets`, so a generator
     would be spent after the first and nothing written, with no error."""
@@ -1691,12 +1705,18 @@ def test_label_lines_tells_lines_in_one_colour_apart_by_dashes_or_markers():
     plt.close(fig)
 
 
-def test_key_refuses_two_entries_in_one_colour():
+def test_key_takes_entries_in_one_colour_whose_words_tell_them_apart():
+    """A key's colours are chosen by hand, and a key naming line styles
+    gives several entries one colour; the cycle wrapping that label_lines
+    guards against cannot happen here."""
     ft.setup()
     fig, ax = plt.subplots()
-    with pytest.raises(ValueError,
-                       match=r"'leaders' and 'envelope'.*colours explicitly"):
-        ft.key(ax, [('leaders', ft.PALETTE[0]), ('envelope', '#0077bb')])
+    ax.plot([0, 1], [0.0, 0.2], color='black')
+    ax.plot([0, 1], [0.1, 0.0], color='black', ls='--')
+    ax.set_ylim(0, 1)   # the upper corners free for the key
+    anns = ft.key(ax, [('WCDE, solid', 'black'), ('census rounds, dashed', 'black')])
+    assert [a.get_text() for a in anns] == ['WCDE, solid', 'census rounds, dashed']
+    assert ft.collisions(fig) == []
     plt.close(fig)
 
 

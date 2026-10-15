@@ -1,6 +1,6 @@
 [project]
 name = "figtools"
-version = "0.8.0"
+version = "0.8.1"
 description = "Matplotlib figure style inspired by Kieran Healy's Data Visualization: direct labels placed clear of each other and of the data, a measured overlap check, export at each destination's physical size, and a machine-readable digest of every figure's data"
 readme = "README.md"
 license = "MIT"

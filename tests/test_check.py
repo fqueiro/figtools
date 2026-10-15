@@ -279,6 +279,24 @@ def test_worker_reports_a_crash_and_checks_the_documents_after_it(tmp_path, caps
 
 
 @pytest.mark.usefixtures('_keep_sys_path')
+def test_a_checked_document_saves_nothing_but_is_still_measured(tmp_path):
+    """Checking a document must not rewrite the figures it exports: `save`
+    measures each size and writes nothing, and still refuses a bad figure."""
+    out = tmp_path / 'figures'
+    out.mkdir()
+    saves = PY.replace("ft.label_lines(ax)",
+                       f"ft.label_lines(ax)\n    ft.save(fig, {str(out / 'fig')!r})")
+    clips = saves.replace("ft.label_lines(ax)",
+                          "ft.label_lines(ax)\n    fig.text(1.2, 0.5, 'off the edge')")
+    docs = folder(tmp_path, saves_py=saves, clips_py=clips)
+    assert fc.main([str(docs), 'saves', '--worker']) == fc.CLEAN
+    assert fc.main([str(docs), 'clips', '--worker']) == fc.CRASHED
+    assert list(out.iterdir()) == []
+    import figtools
+    assert figtools._checking is False   # restored for whatever runs next
+
+
+@pytest.mark.usefixtures('_keep_sys_path')
 def test_worker_exit_code_says_what_it_found(tmp_path):
     docs = folder(tmp_path, clean_py=PY, overlapping_qmd=OVERLAPPING,
                   exits_py=PY.replace('ft.setup()', 'ft.setup()\nimport sys\nsys.exit()'))

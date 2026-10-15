@@ -70,9 +70,10 @@ Regression coefficients:
   ends crowd, as in small multiples (name the series once, in the first
   panel).
 - Series take the seven colours of `ft.PALETTE` in order. `label_lines`
-  and `key` raise when two series they name cannot be told apart, so past
-  seven series give each line its own colour, dash pattern or marker, and
-  give each `key` entry its own colour.
+  raises when two lines it names cannot be told apart, so past seven series
+  give each line its own colour, dash pattern or marker. `key` entries may
+  share a colour when their words tell them apart ('WCDE, solid';
+  'census rounds, dashed').
 - Text sizes come from `setup(base=...)` alone; pass no font size by hand.
   For slides, raise the base.
 - Axis limits are left to autoscale; a limit set by hand states its reason
@@ -124,7 +125,8 @@ Regression coefficients:
   <document>` runs one, named by its stem or its file name. It exits 0 when
   every figure is clean, 1 on overlaps, 2 when a document raised an error.
   It needs `pip install "figtools[check]"`, and runs each document in the
-  folder Quarto would, so it can be called from anywhere.
+  folder Quarto would, so it can be called from anywhere. `save` measures
+  but writes nothing under it, so a check leaves figure files as they were.
 - The check measures every text the figure draws, including a key packed
   from offset boxes or a legend, each counted as one label. It tests text
   against other text, the figure's edge, lines (`plot`, `hlines`,

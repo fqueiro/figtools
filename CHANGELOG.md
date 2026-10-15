@@ -4,6 +4,21 @@ Each release lists first the changes that alter how a figure is drawn, so
 that a project can tell whether upgrading will change its figures, and then
 the steps to upgrade.
 
+## 0.8.1 (2026-10-15)
+
+No change alters a figure, and code written for 0.8.0 runs unchanged.
+
+- `key` accepts entries that share a colour, as a key naming line styles
+  has ('WCDE, solid'; 'census rounds, dashed'). 0.8.0 refused them, which
+  broke keys whose words already tell their entries apart. The check meant
+  for the colour cycle's eighth series stays in `label_lines`, where the
+  cycle applies.
+- Under `fig-check`, `save` measures the figure at each size and raises as
+  before, but writes nothing, so checking a document leaves its figure
+  files as they were.
+- The README opens with what figtools does, the digest among it, and
+  leaves the style choices for last.
+
 ## 0.8.0 (2026-10-15)
 
 The first release on PyPI. It fixes the defects a review for public release

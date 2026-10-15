@@ -38,8 +38,7 @@ The choices are inspired by Kieran Healy's *Data Visualization*:
     assigned in a fixed order, so up to seven series in a panel each get a
     colour of their own; matplotlib's cycle gives the eighth the first
     colour again. Since a direct label names its series by colour,
-    `label_lines` refuses to name two series drawn alike, and `key` two
-    entries in one colour.
+    `label_lines` refuses to name two series drawn alike.
   * The caption names the quantity, its unit and its sign convention, and
     the reference rule is named on the line, so the axes carry no title
     that repeats them; a title stays only where the ticks alone would
@@ -140,8 +139,8 @@ GREY = {'rule': '0.45', 'grid': '0.88', 'text': '0.35', 'shade': '0.93'}
 # Fixed categorical colour order (Paul Tol's vibrant scheme, CVD-safe): seven
 # colours, assigned to series in this order, which is the colour cycle `setup`
 # sets. The cycle starts again at the eighth series, which is drawn like the
-# first; `label_lines` refuses to name two lines drawn alike, and `key` two
-# entries in one colour, since a direct label names its series by colour.
+# first; `label_lines` refuses to name two lines drawn alike, since a direct
+# label names its series by colour.
 # Up to four series the colours identify them on their own; past four,
 # colour identifies less well and the direct labels carry the
 # identification. Tol's grey is excluded because grey is the furniture
@@ -159,6 +158,11 @@ BASE_SIZE = 11.0
 # Whether figures carry their digest: the choice the last `setup` made, which
 # `save` follows unless told otherwise.
 _digest_on = True
+
+# Set by fig-check's worker before it runs a document: `save` then measures the
+# figure at each size, raising as usual, and writes nothing, so checking a
+# document leaves the files it produces as they were.
+_checking = False
 
 
 class _Drawn(list):
@@ -1485,8 +1489,9 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     measured from the drawn entries, so it tracks the font and panel size;
     `lineheight` (axes fraction per entry) overrides it.
 
-    The colour of each word is all that ties it to its series, so two
-    entries in one colour are an error.
+    The colour of each word ties it to its series. Entries may share a
+    colour when their words tell them apart, as in a key that names line
+    styles ('WCDE, solid'; 'census rounds, dashed').
 
     Returns the labels it placed, one per entry.
     """
@@ -1495,16 +1500,6 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
         raise ValueError(f"key: loc must be 'auto' or one of {_CORNERS}, "
                          f'not {loc!r}')
     entries = list(entries)
-    seen = {}
-    for text, color in entries:
-        c = mpl.colors.to_hex(color)
-        if c in seen:
-            raise ValueError(
-                f'key: entries {seen[c]!r} and {text!r} share the colour {c}, '
-                'and a key names each series by its colour alone; pass '
-                'colours explicitly, one of its own for each series, in the '
-                'plot and in the key')
-        seen[c] = text
     auto = loc == 'auto'
     order = _CORNERS if auto else [loc]
     fixed = list(ax.texts)
@@ -2354,7 +2349,9 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     `path`.pkl, stamped with this figtools version; `load` reopens it for
     hand-adjustment without rerunning the analysis.
 
-    Returns the paths written.
+    Returns the paths written. Under `fig-check`, `save` measures the figure
+    at each size and raises as usual but writes nothing, returning the paths
+    it would have written, so a check leaves a document's files as they were.
     """
     from . import digest as _digest
     if digest is not None and not isinstance(digest, bool):
@@ -2410,6 +2407,9 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                                    f'written for it:\n{what}')
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
+            if _checking:
+                written.append(out)
+                continue
             meta = (_digest.pdf_metadata(_digest.describe(fig)) if embed
                     else {})
             # The whole figure, not the tight box `setup` sets for other
@@ -2426,7 +2426,9 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     finally:
         fig.set_size_inches(w0, h0)
         fig.canvas.draw()
-    if retouch:
+    if retouch and _checking:
+        written.append(path.with_name(path.name + '.pkl'))
+    elif retouch:
         pkl = path.with_name(path.name + '.pkl')
         # Read back by `load`, which reopens the figure only under the
         # version that wrote it (see there).

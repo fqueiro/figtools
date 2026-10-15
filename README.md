@@ -147,7 +147,9 @@ cells of a `.ipynb`), in the folder Quarto runs it in, and measures each
 figure at the size an HTML render gives it, read from `fig-width` and
 `fig-height` as Quarto reads them (7 by 5 inches when nothing sets them).
 A `.py` file counts as a document when it has a `# %% [markdown]` or
-`# %% [raw]` cell. It needs the `check` extra.
+`# %% [raw]` cell. A figure the document saves with `save` is measured at
+each size and not written, so a check leaves the document's figure files as
+they were. It needs the `check` extra.
 
 ```sh
 fig-check docs                  # every document in docs/
@@ -269,10 +271,11 @@ with colour-blindness can tell apart, with black in place of its grey:
 seven colours, which series receive in the same order in every figure.
 Up to four series, the colour alone identifies each; past four, the labels
 carry the identification. Since a label names its series by colour,
-`label_lines` and `key` raise an error when two series they would name
-cannot be told apart by colour, line style and marker, as happens to the
-eighth series of an unstyled plot. Grey is kept for everything that is not
-data: rules, the grid, shaded periods, notes.
+`label_lines` raises an error when two lines it would name cannot be told
+apart by colour, line style and marker, as happens to the eighth series of
+an unstyled plot. A `key`'s colours are chosen by hand, and its entries may
+share a colour when their words tell them apart. Grey is kept for
+everything that is not data: rules, the grid, shaded periods, notes.
 
 **No frame, and a grid on the measured axis only.** There are no spines and
 no tick marks: the grid and the tick labels give the reader every
