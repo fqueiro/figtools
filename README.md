@@ -1,8 +1,10 @@
 # figtools
 
 figtools is a matplotlib style with helpers for the figures of research
-papers and slides, inspired by Kieran Healy's *Data Visualization*. It does
-four things:
+papers and slides, inspired by Kieran Healy's *Data Visualization* (hat tip
+to Paul Goldsmith-Pinkham for
+[the introduction](https://paulgp.substack.com/p/from-an-empty-folder-to-a-figure)).
+It does four things:
 
 - **Direct labels.** Each series is named at its end, in its own colour,
   instead of in a legend, and the labels place themselves clear of one
@@ -23,6 +25,11 @@ four things:
   document reads the values each figure shows. The digest holds every
   plotted point, a scatter's raw observations included, so for
   confidential data turn it off with `ft.setup(digest=False)`.
+
+These make figtools suited to coding agents, which cannot judge a figure by
+looking at it: the check gives an agent a pass or fail to work towards, and
+the digest lets it read the values a figure shows
+([more below](https://github.com/fqueiro/figtools#working-with-coding-agents)).
 
 ![Two panels drawn with figtools: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/readme_figure.png)
 
@@ -246,6 +253,29 @@ markdown table over about 600 cells is thinned to its first, last and
 extreme rows and says so, while the CSV keeps every row. Calling
 `set_matplotlib_formats` after `setup()` replaces the formatter that adds
 the digest; call `setup()` again after it.
+
+## Working with coding agents
+
+A coding agent writing figure code cannot reliably judge a figure by
+looking at it. figtools gives it what it needs instead:
+
+- `python -m figtools` prints a short usage guide matching the installed
+  version, written to be read before writing figure code. One line in a
+  project's `AGENTS.md` or `CLAUDE.md` points an agent at it:
+
+  ```md
+  Before writing figure code, read the output of `uv run python -m figtools`.
+  ```
+
+- `collisions`, `save` and `fig-check` turn "is this figure readable?" into
+  a check with an exit code, so an agent fixes overlaps until the check
+  passes rather than judging a rendered image.
+- The digest lets an agent read the numbers a figure shows, from a saved
+  PDF (`render-digest figure`) or from a render's `outputs.md`, so the prose
+  it writes about a figure rests on the figure's values rather than on a
+  guess from its pixels.
+- Errors name the function and the fix, which an agent can act on
+  directly.
 
 ## Figures at the size of their destination
 

@@ -4,6 +4,11 @@ Each release lists first the changes that alter how a figure is drawn, so
 that a project can tell whether upgrading will change its figures, and then
 the steps to upgrade.
 
+## 0.8.2 (2026-10-15)
+
+Documentation only: the README says how figtools serves coding agents, and
+credits where its design came from. Nothing in the package changes.
+
 ## 0.8.1 (2026-10-15)
 
 No change alters a figure, and code written for 0.8.0 runs unchanged.
