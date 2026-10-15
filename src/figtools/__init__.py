@@ -1,22 +1,20 @@
 """A figure style and plotting helpers for research documents.
 
 One call to `setup()` at the top of a document, and every figure in it
-matches every other figure drawn with the package: the style, the direct
-labels that replace legends, helpers for the plot types common in empirical
-work (time series with bands, dot plots, pointranges, binned and labelled
-scatters), export at the physical size of each destination, and the
-measurement that keeps direct labelling honest. `style()` applies the same
-inside a `with` block and undoes it on leaving, for code that shares a
-process with other plotting.
+matches every other figure drawn with the package. Beyond the style, the
+package does four things: it names series with direct labels that place
+themselves clear of one another and of the data; it measures a drawn figure
+for any label that collides with something (`collisions`), and `save`
+refuses to write one that does; it exports each figure at the physical size
+of its destination, the paper column and the slide; and it embeds a digest
+of the plotted data in every exported figure, so a program can read the
+figure back. Helpers cover the plot types common in empirical work (time
+series with bands, dot plots, pointranges, binned and labelled scatters).
+`style()` applies the same inside a `with` block and undoes it on leaving,
+for code that shares a process with other plotting.
 
 The choices are inspired by Kieran Healy's *Data Visualization*:
 
-  * One colour-blind-safe categorical palette (Tol vibrant), seven colours
-    assigned in a fixed order, so up to seven series in a panel each get a
-    colour of their own; matplotlib's cycle gives the eighth the first
-    colour again. Since a direct label names its series by colour,
-    `label_lines` refuses to name two series drawn alike, and `key` two
-    entries in one colour.
   * Direct labelling in place of legends. A legend forces a reader to hold a
     colour in memory and hop between the key and the line; a label at the end
     of the line does not. `label_lines`, `label_points` and `label_last` do
@@ -25,17 +23,23 @@ The choices are inspired by Kieran Healy's *Data Visualization*:
     with clipping off: the panel stays the data region, and the layout
     engine reserves the space the labels need rather than the axis being
     stretched to hold them.
+  * Reference lines and shaded bands annotated in place ("parity", "fragile
+    data") rather than left for the reader to infer.
+  * No frame around the data at all: no spines, no tick marks. The grid and
+    the floating tick labels carry every reference the reader needs; axis
+    lines are frame ink.
   * Gridlines only on the axis carrying the measurement, drawn light and
     behind the data, so they support reading values without competing; they
     stop where the data stops instead of running on under the labels.
   * Ticks that name values the data can take: where everything plotted
     against an axis is a whole number, so are its ticks, since matplotlib's
     default steps would otherwise label a year axis 2007.5, 2010.0, 2012.5.
-  * No frame around the data at all: no spines, no tick marks. The grid and
-    the floating tick labels carry every reference the reader needs; axis
-    lines are frame ink.
-  * Reference lines and shaded bands annotated in place ("parity", "fragile
-    data") rather than left for the reader to infer.
+  * One colour-blind-safe categorical palette (Tol vibrant), seven colours
+    assigned in a fixed order, so up to seven series in a panel each get a
+    colour of their own; matplotlib's cycle gives the eighth the first
+    colour again. Since a direct label names its series by colour,
+    `label_lines` refuses to name two series drawn alike, and `key` two
+    entries in one colour.
   * The caption names the quantity, its unit and its sign convention, and
     the reference rule is named on the line, so the axes carry no title
     that repeats them; a title stays only where the ticks alone would

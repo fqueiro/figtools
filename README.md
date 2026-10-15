@@ -1,11 +1,28 @@
 # figtools
 
 figtools is a matplotlib style with helpers for the figures of research
-papers and slides, inspired by Kieran Healy's *Data Visualization*. It names
-series with direct labels instead of legends, checks that no label sits on a
-line, a marker or another label, saves each figure at the physical size of
-the page or slide it goes into, and embeds the plotted data in every
-exported image so that a program can read the figure back.
+papers and slides, inspired by Kieran Healy's *Data Visualization*. It does
+four things:
+
+- **Direct labels.** Each series is named at its end, in its own colour,
+  instead of in a legend, and the labels place themselves clear of one
+  another and of the data at whatever size the figure is drawn.
+- **A check that no label collides with anything.** `collisions(fig)`
+  measures the drawn figure and reports any label on a line, a marker, a
+  shape or another label, and any text cut off at the edge. `save` refuses
+  to write such a figure, and `fig-check` checks every figure in a folder
+  of documents.
+- **Figures at the size of their destination.** `save` writes each figure
+  at the exact width of a paper's text column and of a slide, so its type
+  lands on the page at the point size `setup` chose.
+- **Figures a program can read.** Every exported figure carries a
+  *digest*, its plotted data, inside the image file. `render-digest` reads
+  it back as tables, and after a Quarto render a hook writes each
+  document's figures, tables and printed output as text, so a script or a
+  language model working from a paper's figure files or a rendered
+  document reads the values each figure shows. The digest holds every
+  plotted point, a scatter's raw observations included, so for
+  confidential data turn it off with `ft.setup(digest=False)`.
 
 ![Two panels drawn with figtools: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/readme_figure.png)
 
@@ -54,16 +71,10 @@ ft.save(fig, 'employment')                  # employment.pdf, employment_slides.
 ```
 
 `save` writes `employment.pdf`, 5.9 inches wide for a paper, and
-`employment_slides.pdf`, 4.1 inches wide for a slide. Before writing each
-one it checks the figure at that size, and it raises an error instead of
-writing a file in which a label overlaps something. In a notebook the
-figure also appears below the cell.
-
-The PDFs `save` writes and the PNGs a notebook shows carry the plotted
-points in their metadata, up to 5,000 per series and the raw observations
-of a scatter included, and anyone with the file can read them back. For
-figures of confidential data, `ft.setup(digest=False)` turns this off; see
-[the digest](https://github.com/fqueiro/figtools#the-digest).
+`employment_slides.pdf`, 4.1 inches wide for a slide, each carrying the
+figure's digest. Before writing each one it checks the figure at that
+size, and it raises an error instead of writing a file in which a label
+overlaps something. In a notebook the figure also appears below the cell.
 
 `python -m figtools` prints a short usage guide, and `help(ft.label_lines)`
 gives the full reference of any function.
@@ -81,153 +92,28 @@ The scripts run with the tests, which fail if any label collides.
 | ![Sixteen industry names placed at their values, with a fitted line and a note giving N and R squared](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/gallery/labelled_scatter.png)<br>Scatter in which each name is the mark ([script](https://github.com/fqueiro/figtools/blob/main/docs/gallery/labelled_scatter.py)) | ![A scatter of regions with six of them named, one name joined to its point by a leader](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/gallery/named_points.png)<br>A few points named, each label clear of every point ([script](https://github.com/fqueiro/figtools/blob/main/docs/gallery/named_points.py)) |
 | ![Four panels of unemployment by age group, the three groups named once by coloured words in the first panel](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/gallery/small_multiples.png)<br>Small multiples with the series named once ([script](https://github.com/fqueiro/figtools/blob/main/docs/gallery/small_multiples.py)) | |
 
-## What figtools does, and why
+## Direct labels
 
-Each choice below is something the helpers assume. A figure that departs
-from one still draws, but its labels and its check may not behave as
-described.
+A legend makes the reader hold a colour in memory and move back and forth
+between the key and the data; a name at the end of each line does not.
+`label_lines` puts the names in the margin beyond the panel, moves them
+clear of one another and of the lines, and draws a hairline leader back to
+a line once its label has moved far enough that the pairing stops being
+obvious. `setup` turns on matplotlib's constrained layout, which measures
+the margin the labels need and shrinks the axes to fit, so the panel ends
+where the data end and the grid stops with it. A `tight_layout()` call on
+such a figure warns and switches the layout engine off. A label wider than
+a fifth of the figure is broken at spaces into two or three balanced
+lines, decided again at each output size; a label broken by hand, with a
+newline, is kept as written.
 
-**Direct labels instead of legends.** A legend makes the reader hold a
-colour in memory and move back and forth between the key and the data; a
-name at the end of each line does not. `label_lines` puts the names in the
-margin beyond the panel, moves them clear of one another and of the lines,
-and draws a hairline leader back to a line once its label has moved far
-enough that the pairing stops being obvious. `setup` turns on matplotlib's
-constrained layout, which measures the margin the labels need and shrinks
-the axes to fit, so the panel ends where the data end and the grid stops
-with it. A `tight_layout()` call on such a figure warns and switches the
-layout engine off. A label wider than a fifth of the figure is broken at
-spaces into two or three balanced lines, decided again at each output
-size; a label broken by hand, with a newline, is kept as written. Where
-line ends crowd, as in small multiples, `key` stacks the names in a free
-corner, each word in its series' colour.
-
-**One palette in a fixed order.** Paul Tol's vibrant scheme, which readers
-with colour-blindness can tell apart, with black in place of its grey:
-seven colours, which series receive in the same order in every figure. Up to four series, the colour alone
-identifies each; past four, the labels carry the identification. Since a
-label names its series by colour, `label_lines` and `key` raise an error
-when two series they would name cannot be told apart by colour, line style
-and marker, as happens to the eighth series of an unstyled plot. Grey is
-kept for everything that is not data: rules, the grid, shaded periods,
-notes.
-
-**No frame, and a grid on the measured axis only.** There are no spines and
-no tick marks: the grid and the tick labels give the reader every
-reference needed, and a frame is ink that carries no data. The grid is
-light, sits behind the data, runs along the axis that carries the
-measurement only (horizontal lines for a time series, vertical ones for a
-dot plot), and stops where the data stop.
-
-**Ticks at values the data can take.** Where everything plotted against an
-axis is a whole number, so are its ticks. Matplotlib's default steps
-include 2.5, which labels a sixteen-year axis 2007.5, 2010.0, 2012.5, and
-whether a panel lands on that step depends on how much margin its labels
-take, so one longer series name can flip it. An axis of fractional data
-keeps its fractional ticks; a reference rule at 2020.5 is furniture and
-does not count as data.
-
-**Dots instead of bars.** Where a figure compares magnitudes across
-categories, `dotplot` draws a Cleveland dot plot. A bar spends ink on the
-length from zero, which misleads when zero is not a meaningful origin; a
-dot marks the value alone.
-
-**Reference rules and periods named in place.** An unlabelled rule at 0 or
-1 leaves the reader to work out what it marks. `refline` and `shade` write
-the name on the rule or the band, placed where the data leave room.
-
-**The caption carries the quantity.** The helpers assume that the caption
-names the quantity, its unit and its sign convention, and that each
-reference rule is named on its line, so the axes carry no title that
-repeats them. A title is kept where the ticks alone would mislead, as on a
-scatter whose two axes are different variables.
-
-**Limits left to autoscale.** A helper moves an axis limit only while that
-limit autoscales: `label_lines` ends the panel at the data, and a rule's
-label at the top of the data raises the top to fit. A limit set by hand,
-such as a scale shared across figures, is never moved. A rule's label that
-then does not fit on its usual side goes to the other side of the rule, or
-stays outside the panel for the check to report.
-
-**Type from one base size.** `setup(base=11)` puts titles and axis labels
-at the base size and every other piece of text (ticks, line labels, key
-entries, notes) half a point below it. The one exception is the names that
-`label_points` and `label_scatter` print at scatter points, two points
-smaller again so that many of them fit in the panel. Every helper reads its
-sizes from the base, so sizes cannot drift apart element by element, and a
-slide deck is `setup(base=13)` rather than a retouching session. The
-default of 11 points is ggplot's base size.
-
-**Figures at the size of their destination.** `save` renders each file at
-the physical width of where it goes, 5.9 inches for a paper's text column
-and 4.1 inches for a slide by default, re-solving the label placement at
-each size. Include the PDFs in LaTeX at their natural size, with no
-`width=` option: the type then lands on the page at the point size `setup`
-chose. Scaling a figure when it is included is what changes the size of its
-type. Each file is written whole, uncropped, so figures built alike come
-out the same size and subfigures stacked in a paper line up; the usage
-guide gives the recipe for figures read at one scale.
-
-**A captioned figure cell shows the figure and nothing else.** In a Jupyter
-or Quarto document, a cell displays the value of its last statement when
-that statement is an expression. A bare matplotlib call such as
-`ax.set_xlabel(...)` returns an object that is then displayed as a second
-output, and so is a table. Quarto numbers the figure and that output as
-subfigures (a) and (b), gives the caption to the second output, and leaves
-the figure without one. The drawing helpers and `save` return values that
-a notebook displays as nothing, so a cell may end on one of them; `panels`
-and `collisions` return values a notebook shows. End any other figure cell
-with `plt.show()`, and give tables cells of their own. The digest's Quarto
-hook fails the render and names any figure whose caption another output
-took over.
-
-**`setup` changes the whole process.** It sets matplotlib's rcParams
-globally, replaces the linear scale with one that applies the whole-number
-tick rule to every axes created afterwards by any library, and in a
-notebook kernel wraps the formatters that display figures. Code that shares
-a process with other plotting can use `with ft.style():` instead, which
-applies the same inside the block and undoes it on leaving.
-
-**Data in any array form.** The helpers convert their data with
-`np.asarray`, so lists, NumPy arrays, pandas Series and Polars columns all
-work as they are.
-
-## Public names
-
-| Name | What it is |
-|---|---|
-| `setup(base=11, digest=True)` | Applies the style to the whole process. Call it once, before any figure. |
-| `style(base=11, digest=True)` | The same as `setup` inside a `with` block, undone on leaving. |
-| `label_lines(ax)` | Names each line at its end, in its colour, in the margin. Call it once per axes, after every series. |
-| `label_points(ax, x, y, labels)` | Names some points of a scatter, each label moved clear of the others, of the points and of the lines. |
-| `label_last(ax, x, y, text, color)` | One direct label, for a series drawn without a line. |
-| `key(ax, entries)` | Coloured names stacked in a free corner, for small multiples or crowded line ends. |
-| `refline(ax, value, label=None, axis='y')` | A grey reference rule, horizontal or (with `axis='x'`) vertical, named on the line. |
-| `shade(ax, x0, x1, label=None)` | A shaded range of x, named at its top. |
-| `refcurve(ax, x, y)` | A grey background curve (a fit, a 45-degree line, a bound) that labels may cross. |
-| `band(ax, x, lo, hi)` | A confidence band in the colour of the line drawn just before. |
-| `pointrange(ax, x, y, lo, hi)` | Estimates with vertical intervals, for event studies and coefficient profiles. |
-| `dotplot(ax, labels, values, ci=None)` | A Cleveland dot plot ranked by value; with `ci`, a horizontal coefficient plot. |
-| `binscatter(ax, x, y, controls=None, bins=20)` | Means of y within quantile bins of x, with an OLS fit on every observation. Returns the bin means and the slope. |
-| `label_scatter(ax, x, y, labels)` | A scatter whose marks are the names, with an optional fit line and a note giving N and R². |
-| `panels(n=2)` | A row of `n` panels sized as one figure. Returns `(fig, axes)`. |
-| `grid_axis(ax, axis)` | Draws the grid on `'x'`, `'y'` or `'both'` only. |
-| `collisions(fig)` | Lists each label that overlaps something and each text that runs off the figure. Empty when the figure is clean. |
-| `save(fig, path)` | Writes `path.pdf` and `path_slides.pdf` at their exact widths, and refuses any size at which the check fails. Returns the paths written. |
-| `load(path)` | Reopens a figure pickled by `save(..., retouch=True)`, and raises for a pickle that any other figtools version wrote. Unpickling runs code from the file: load only files you wrote. |
-| `PALETTE` | The seven colours, in the order series receive them. |
-| `GREY` | The greys for rules, the grid, notes and shaded periods. |
-| `TARGET_WIDTHS` | The widths `save` writes, in inches: `{'paper': 5.9, 'slides': 4.1}`. `save(..., widths={'poster': 9.0})` also writes `path_poster.pdf`, and `widths={'paper': 6.2}` overrides a default. `targets=` chooses the files, and must name every target `widths` gives. |
-| `BASE_SIZE` | The default base type size, 11 points. |
-| `__version__` | The installed version. |
-| `figtools.digest` | Reads and writes the digest; `describe(fig)` returns a live figure's digest. |
-| `fig-check` | The command that checks every figure in a folder of documents (below). |
-| `render-digest` | The command that reads digests back and runs the Quarto hook (below). |
-| `python -m figtools` | Prints the usage guide; `python -m figtools readme` prints this README. |
-
-The drawing helpers return what they drew (lines, labels, bands, markers)
-in a list, so that it can be restyled; `rule, label = ft.refline(ax, 0,
-'zero')` is a typical use. A notebook displays the list as nothing.
+Where line ends crowd, as in small multiples, `key` stacks the names in a
+free corner, each word in its series' colour. `label_points` names some
+points of a scatter, each name moved clear of the others, of the points and
+of the lines; `label_scatter` prints names as the marks themselves.
+Reference rules and shaded periods are named in place too: an unlabelled
+rule at 0 or 1 leaves the reader to work out what it marks, so `refline` and
+`shade` write the name on the rule or the band, where the data leave room.
 
 ## Checking figures
 
@@ -358,6 +244,138 @@ markdown table over about 600 cells is thinned to its first, last and
 extreme rows and says so, while the CSV keeps every row. Calling
 `set_matplotlib_formats` after `setup()` replaces the formatter that adds
 the digest; call `setup()` again after it.
+
+## Figures at the size of their destination
+
+`save` renders each file at the physical width of where it goes, 5.9
+inches for a paper's text column and 4.1 inches for a slide by default,
+re-solving the label placement at each size. Include the PDFs in LaTeX at
+their natural size, with no `width=` option: the type then lands on the
+page at the point size `setup` chose. Scaling a figure when it is included
+is what changes the size of its type. Each file is written whole,
+uncropped, so figures built alike come out the same size and subfigures
+stacked in a paper line up; the usage guide gives the recipe for figures
+read at one scale. Other destinations are a width away:
+`save(fig, path, widths={'poster': 9.0})` also writes `path_poster.pdf`.
+
+## The style, and what the helpers assume
+
+Each choice below is something the helpers assume. A figure that departs
+from one still draws, but its labels and its check may not behave as
+described.
+
+**One palette in a fixed order.** Paul Tol's vibrant scheme, which readers
+with colour-blindness can tell apart, with black in place of its grey:
+seven colours, which series receive in the same order in every figure.
+Up to four series, the colour alone identifies each; past four, the labels
+carry the identification. Since a label names its series by colour,
+`label_lines` and `key` raise an error when two series they would name
+cannot be told apart by colour, line style and marker, as happens to the
+eighth series of an unstyled plot. Grey is kept for everything that is not
+data: rules, the grid, shaded periods, notes.
+
+**No frame, and a grid on the measured axis only.** There are no spines and
+no tick marks: the grid and the tick labels give the reader every
+reference needed, and a frame is ink that carries no data. The grid is
+light, sits behind the data, runs along the axis that carries the
+measurement only (horizontal lines for a time series, vertical ones for a
+dot plot), and stops where the data stop.
+
+**Ticks at values the data can take.** Where everything plotted against an
+axis is a whole number, so are its ticks. Matplotlib's default steps
+include 2.5, which labels a sixteen-year axis 2007.5, 2010.0, 2012.5, and
+whether a panel lands on that step depends on how much margin its labels
+take, so one longer series name can flip it. An axis of fractional data
+keeps its fractional ticks; a reference rule at 2020.5 is furniture and
+does not count as data.
+
+**Dots instead of bars.** Where a figure compares magnitudes across
+categories, `dotplot` draws a Cleveland dot plot. A bar spends ink on the
+length from zero, which misleads when zero is not a meaningful origin; a
+dot marks the value alone.
+
+**Type from one base size.** `setup(base=11)` puts titles and axis labels
+at the base size and every other piece of text (ticks, line labels, key
+entries, notes) half a point below it. The one exception is the names that
+`label_points` and `label_scatter` print at scatter points, two points
+smaller again so that many of them fit in the panel. Every helper reads its
+sizes from the base, so sizes cannot drift apart element by element, and a
+slide deck is `setup(base=13)` rather than a retouching session. The
+default of 11 points is ggplot's base size.
+
+**The caption carries the quantity.** The helpers assume that the caption
+names the quantity, its unit and its sign convention, and that each
+reference rule is named on its line, so the axes carry no title that
+repeats them. A title is kept where the ticks alone would mislead, as on a
+scatter whose two axes are different variables.
+
+**Limits left to autoscale.** A helper moves an axis limit only while that
+limit autoscales: `label_lines` ends the panel at the data, and a rule's
+label at the top of the data raises the top to fit. A limit set by hand,
+such as a scale shared across figures, is never moved. A rule's label that
+then does not fit on its usual side goes to the other side of the rule, or
+stays outside the panel for the check to report.
+
+**A captioned figure cell shows the figure and nothing else.** In a Jupyter
+or Quarto document, a cell displays the value of its last statement when
+that statement is an expression. A bare matplotlib call such as
+`ax.set_xlabel(...)` returns an object that is then displayed as a second
+output, and so is a table. Quarto numbers the figure and that output as
+subfigures (a) and (b), gives the caption to the second output, and leaves
+the figure without one. The drawing helpers and `save` return values that
+a notebook displays as nothing, so a cell may end on one of them; `panels`
+and `collisions` return values a notebook shows. End any other figure cell
+with `plt.show()`, and give tables cells of their own. The digest's Quarto
+hook fails the render and names any figure whose caption another output
+took over.
+
+**`setup` changes the whole process.** It sets matplotlib's rcParams
+globally, replaces the linear scale with one that applies the whole-number
+tick rule to every axes created afterwards by any library, and in a
+notebook kernel wraps the formatters that display figures. Code that shares
+a process with other plotting can use `with ft.style():` instead, which
+applies the same inside the block and undoes it on leaving.
+
+**Data in any array form.** The helpers convert their data with
+`np.asarray`, so lists, NumPy arrays, pandas Series and Polars columns all
+work as they are.
+
+## Public names
+
+| Name | What it is |
+|---|---|
+| `setup(base=11, digest=True)` | Applies the style to the whole process. Call it once, before any figure. |
+| `style(base=11, digest=True)` | The same as `setup` inside a `with` block, undone on leaving. |
+| `label_lines(ax)` | Names each line at its end, in its colour, in the margin. Call it once per axes, after every series. |
+| `label_points(ax, x, y, labels)` | Names some points of a scatter, each label moved clear of the others, of the points and of the lines. |
+| `label_last(ax, x, y, text, color)` | One direct label, for a series drawn without a line. |
+| `key(ax, entries)` | Coloured names stacked in a free corner, for small multiples or crowded line ends. |
+| `refline(ax, value, label=None, axis='y')` | A grey reference rule, horizontal or (with `axis='x'`) vertical, named on the line. |
+| `shade(ax, x0, x1, label=None)` | A shaded range of x, named at its top. |
+| `refcurve(ax, x, y)` | A grey background curve (a fit, a 45-degree line, a bound) that labels may cross. |
+| `band(ax, x, lo, hi)` | A confidence band in the colour of the line drawn just before. |
+| `pointrange(ax, x, y, lo, hi)` | Estimates with vertical intervals, for event studies and coefficient profiles. |
+| `dotplot(ax, labels, values, ci=None)` | A Cleveland dot plot ranked by value; with `ci`, a horizontal coefficient plot. |
+| `binscatter(ax, x, y, controls=None, bins=20)` | Means of y within quantile bins of x, with an OLS fit on every observation. Returns the bin means and the slope. |
+| `label_scatter(ax, x, y, labels)` | A scatter whose marks are the names, with an optional fit line and a note giving N and R². |
+| `panels(n=2)` | A row of `n` panels sized as one figure. Returns `(fig, axes)`. |
+| `grid_axis(ax, axis)` | Draws the grid on `'x'`, `'y'` or `'both'` only. |
+| `collisions(fig)` | Lists each label that overlaps something and each text that runs off the figure. Empty when the figure is clean. |
+| `save(fig, path)` | Writes `path.pdf` and `path_slides.pdf` at their exact widths, and refuses any size at which the check fails. Returns the paths written. |
+| `load(path)` | Reopens a figure pickled by `save(..., retouch=True)`, and raises for a pickle that any other figtools version wrote. Unpickling runs code from the file: load only files you wrote. |
+| `PALETTE` | The seven colours, in the order series receive them. |
+| `GREY` | The greys for rules, the grid, notes and shaded periods. |
+| `TARGET_WIDTHS` | The widths `save` writes, in inches: `{'paper': 5.9, 'slides': 4.1}`. `save(..., widths={'poster': 9.0})` also writes `path_poster.pdf`, and `widths={'paper': 6.2}` overrides a default. `targets=` chooses the files, and must name every target `widths` gives. |
+| `BASE_SIZE` | The default base type size, 11 points. |
+| `__version__` | The installed version. |
+| `figtools.digest` | Reads and writes the digest; `describe(fig)` returns a live figure's digest. |
+| `fig-check` | The command that checks every figure in a folder of documents. |
+| `render-digest` | The command that reads digests back and runs the Quarto hook. |
+| `python -m figtools` | Prints the usage guide; `python -m figtools readme` prints this README. |
+
+The drawing helpers return what they drew (lines, labels, bands, markers)
+in a list, so that it can be restyled; `rule, label = ft.refline(ax, 0,
+'zero')` is a typical use. A notebook displays the list as nothing.
 
 ## Versions and changes
 
