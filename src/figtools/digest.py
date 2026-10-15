@@ -7,39 +7,59 @@ plotted data as JSON, and after a render collects the digests, the tables
 and the printed output of a document into one markdown file a program can
 read.
 
-Mechanism. `install()` (run by `setup()` in a notebook kernel) wraps the
-formatters IPython uses to turn a figure into its PNG or PDF, so the image
-carries the digest under the key `figtools-digest`: a compressed text chunk
-in a PNG, an entry of the document information dictionary in a PDF, split
-into pieces under 32 kB where a reader may cap a string. `save` writes the
-same entry into the PDFs it exports for a paper. The image is otherwise
+Mechanism. `install()` (run by `setup()`) wraps the formatters a notebook
+kernel uses to turn a figure into its PNG or PDF, so the image carries the
+digest under the key `figtools-digest`: a compressed text chunk in a PNG, an
+entry of the document information dictionary in a PDF, split into pieces
+under 32 kB where a reader may cap a string. Terminal IPython runs no
+kernel, so there `install()` leaves the shell and its window backend alone.
+`uninstall()` puts back the formatters `install()` wrapped, and
+`installed()` says whether the digest is armed. `save` writes the same
+entry into the PDFs it exports for a paper. The image is otherwise
 unchanged and nothing else appears in the cell: a second output in a
-captioned figure cell would turn the pair into subfigures. After a render,
-`post_render()` (Quarto's `post-render` hook) reads each embedded image back
-out of the page, writes the digests as markdown and CSV beside the images,
-converts the page's tables and printed output to text, and stamps the lot
-with a hash of the source, so a reader can tell whether the document changed
-since. Everything lands under
-`~/.local/share/render-digests/<project>/<document path>/`, outside the
-repository. A document rendered to PDF yields its
-figures' digests, read from the document itself since the LaTeX engine
-copies each figure file's entry into it, under `pdf/` in the same folder.
+captioned figure cell would turn the pair into subfigures.
+
+After a render, `post_render()` (Quarto's `post-render` hook) finds the
+source of each page or PDF the render wrote, at the same path under the
+project folder as the output has under the output folder (`output-dir`, a
+website's `_site`, a book's `_book`; without one, beside the output). An
+output whose source runs no figtools code (a plain Markdown page) is
+skipped with a line saying so, and so is a PDF no single document made (a
+book's). It reads each figure's image back out of the page, embedded in it
+or linked beside it (Quarto's default writes `<document>_files/figure-html/`
+next to the page), writes the digests as markdown and CSV beside the
+images, converts the page's tables and printed output to text, and stamps
+the lot with a hash of the source, so a reader can tell whether the
+document changed since. Everything lands under
+`<cache>/<project folder name>/<document path>/`, outside the repository,
+where the cache is `~/.local/share/render-digests` or the absolute folder
+the environment variable `FIGTOOLS_DIGEST_DIR` names, read at each call.
+Each folder's manifest records the project's absolute path, and a render
+refuses to overwrite the digest of another project with the same folder
+name while that project's folder still holds its `_quarto.yml`; the
+variable gives one of them a cache of its own. The digest of a project
+that moved or was deleted is stale, and the next render replaces it. A
+document rendered to PDF yields its figures' digests, read from the
+document itself since the LaTeX engine copies each figure file's entry
+into it, under `pdf/` in the same folder.
 
 What a digest holds, per panel: the axis titles, scales and kinds (number,
 date, category); each plotted series with its label, colour and values
 (lines and marker series, bars, scatters, bands, intervals, error bars with
 or without their points); reference rules and shaded spans with their
 in-place labels; points named in data coordinates; notes, which are text
-written in axes coordinates, the lines of a key packed from offset boxes
-and the legend entries that name no series, each with its colour, which
-names an unlabelled series drawn in it; small image grids in full and
-larger ones by shape and range; and what was not digested. Series longer
-than `SERIES_CAP` points are thinned evenly and say so. Values keep six
+written in axes coordinates, the lines of text packed in offset boxes and
+the legend entries that name no series, each with its colour; small image
+grids in full and larger ones by shape and range; and what was not
+digested. A key entry names the unlabelled series drawn in its colour: an
+entry of `key`, a line of a key packed from offset boxes, a legend entry.
+Other notes, such as a panel letter, name no series. Series longer than
+`SERIES_CAP` points are thinned evenly and say so. Values keep six
 significant digits.
 
     render-digest post-render        # what `_quarto.yml` runs after a render
     render-digest where <document>   # the folder a document's digest lands in
-    render-digest check <document>   # exit 1 when the source changed since the render
+    render-digest check <document>   # exit 1 when the source changed since the render, 2 with no digest
     render-digest extract <page.html> [--source <document>] [--out <folder>]
     render-digest figure <figure.png|.pdf> ...   # print the digest an image carries
 """
@@ -60,6 +80,7 @@ import zlib
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import matplotlib as mpl
 import matplotlib.category
@@ -71,7 +92,10 @@ from figtools import GREY
 
 KEY = 'figtools-digest'
 VERSION = 1
-CACHE_ROOT = Path.home() / '.local' / 'share' / 'render-digests'
+CACHE_ROOT = Path.home() / '.local' / 'share' / 'render-digests'   # unless FIGTOOLS_DIGEST_DIR is set
+SOURCES = ('.py', '.qmd', '.ipynb')   # the suffixes a rendered document's source may have
+PROSE_SOURCES = ('.md', '.markdown', '.Rmd')   # sources of pages that run no figtools code
+QUARTO_FILES = ('_quarto.yml', '_quarto.yaml')   # either marks a Quarto project's folder
 SERIES_CAP = 5000   # points kept per series in a digest; longer ones are thinned evenly
 TABLE_CELLS = 600   # cells a markdown table may hold before its rows are thinned
 PDF_PIECE = 30000   # characters per information-dictionary string; some readers cap one at 32767 bytes
@@ -176,6 +200,14 @@ def _handle_color(h):
 def _stacks(artist):
     """Does the artist stack anything vertically inside itself?"""
     return any(isinstance(c, mpl.offsetbox.VPacker) or _stacks(c) for c in artist.get_children())
+
+
+def _packs(artist):
+    """Does the artist pack text side by side or in a stack, as a key built
+    from offset boxes does? A lone `AnchoredText`, such as a panel letter,
+    packs nothing."""
+    return any(isinstance(c, (mpl.offsetbox.HPacker, mpl.offsetbox.VPacker)) or _packs(c)
+               for c in artist.get_children())
 
 
 def _text_lines(artist):
@@ -301,7 +333,7 @@ def _panel(ax):
             s = {'kind': 'line' if drawn else 'points', 'label': _label(ln),
                  'color': _color(ln.get_color()),
                  'x': [X(v) for v in xd], 'y': [Y(v) for v in yd]}
-            if getattr(ln, '_fs_guide', False):
+            if getattr(ln, '_figtools_refcurve', False):
                 s['role'] = 'guide'
             _cap(s)
             series.append(s)
@@ -440,10 +472,14 @@ def _panel(ax):
             continue
         txt = ' '.join(str(t.get_text()).split())
         # Direct line labels (label_lines) repeat the series names.
-        if not txt or getattr(t, '_fs_text', None) is not None:
+        if not txt or getattr(t, '_figtools_text', None) is not None:
             continue
         color = _color(t.get_color())
-        if isinstance(t, mpl.text.Annotation):
+        if getattr(t, '_figtools_key', False):
+            # An entry of `key`: the only annotation whose colour names a
+            # series. `_names` marks such notes until the naming below.
+            notes.append({'text': txt, 'color': color, '_names': True})
+        elif isinstance(t, mpl.text.Annotation):
             xc = t.xycoords
             x, y = t.xy
             if xc == 'data':
@@ -462,7 +498,9 @@ def _panel(ax):
 
     # Text drawn inside other artists: a key packed from offset boxes,
     # `AnchoredText`, an annotation box. A box pinned to a data point names
-    # that point, as an annotation does.
+    # that point, as an annotation does. The lines of a box that packs its
+    # text are a key's entries; a lone text, such as a panel letter in
+    # `AnchoredText`, is a note that names nothing.
     for a in ax.artists:
         if not a.get_visible():
             continue
@@ -475,10 +513,14 @@ def _panel(ax):
             points.append({'text': ' '.join(n['text'] for n in lines), 'x': X(x), 'y': Y(y),
                            'color': colors.pop() if len(colors) == 1 else None})
         else:
+            if _packs(a):
+                for n in lines:
+                    n['_names'] = True
             notes += lines
     # A legend's entries are the labels of the series they stand for, which
     # the series already carry; an entry naming no series is a note in its
-    # handle's colour, so it names an unlabelled series as a key entry does.
+    # handle's colour, and names the unlabelled series drawn in it, since
+    # the handle is drawn from that series.
     leg = ax.get_legend()
     if leg is not None and leg.get_visible():
         title = ' '.join(leg.get_title().get_text().split())
@@ -488,7 +530,7 @@ def _panel(ax):
         for t, h in zip(leg.get_texts(), leg.legend_handles, strict=False):
             txt = ' '.join(t.get_text().split())
             if txt and t.get_visible() and txt not in labels:
-                notes.append({'text': txt, 'color': _handle_color(h)})
+                notes.append({'text': txt, 'color': _handle_color(h), '_names': True})
 
     def near(a, b):
         return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
@@ -510,8 +552,8 @@ def _panel(ax):
         else:
             notes.append({'text': txt})
 
-    # A key (`key`) names series by colour; carry the names onto the series.
-    named = {n['color']: n['text'] for n in notes if n.get('color')}
+    # A key's entries name series by colour; carry the names onto the series.
+    named = {n['color']: n['text'] for n in notes if n.get('_names') and n.get('color')}
     for s in series:
         if s['label'] is None and s.get('color') in named:
             s['label'] = named[s['color']]
@@ -529,6 +571,8 @@ def _panel(ax):
     for s in shades:
         s.pop('_lo', None)
         s.pop('_hi', None)
+    for n in notes:
+        n.pop('_names', None)
     for key, val in (('series', series), ('rules', rules), ('shades', shades),
                      ('points', points), ('notes', notes), ('images', images),
                      ('incomplete', missing)):
@@ -709,8 +753,31 @@ def _wrap_formatter(registry, kind):
             return func(fig, metadata=meta, **kw)
 
     with_digest._figtools_digest = True
+    with_digest._figtools_original = current   # what `uninstall` puts back
     registry.for_type(Figure, with_digest)
     return True
+
+
+def _shell():
+    """The running IPython shell, or None outside IPython."""
+    try:
+        from IPython.core.getipython import get_ipython
+    except ImportError:
+        return None
+    return get_ipython()
+
+
+def _figure_formatters(ip):
+    """(registry, its figure formatter) for the PNG and PDF registries that hold one."""
+    from matplotlib.figure import Figure
+    found = []
+    for mime in ('image/png', 'application/pdf'):
+        registry = ip.display_formatter.formatters[mime]
+        try:
+            found.append((registry, registry.lookup_by_type(Figure)))
+        except KeyError:
+            continue
+    return found
 
 
 def install():
@@ -718,18 +785,18 @@ def install():
 
     Wraps the formatters that turn a figure into its PNG or PDF for display,
     adding the digest to the image's metadata. Does nothing, and returns
-    False, outside IPython or under a backend other than the inline one.
-    Resolves the inline backend first when it is still pending: its
-    configuration selects the figure formatters, and would replace the
+    False, outside IPython, in a shell with no kernel (terminal IPython,
+    which keeps its window backend) or under a backend other than the
+    inline one. Resolves the inline backend first when it is still pending:
+    its configuration selects the figure formatters, and would replace the
     wrappers if it ran later, at the first figure.
     """
     try:
         import matplotlib_inline.backend_inline as inline
-        from IPython.core.getipython import get_ipython
     except ImportError:
         return False
-    ip = get_ipython()
-    if ip is None:
+    ip = _shell()
+    if ip is None or getattr(ip, 'kernel', None) is None:
         return False
     try:
         backend = mpl.get_backend(auto_select=False)
@@ -747,6 +814,34 @@ def install():
                       '(fig-format svg?), so they will carry no digest', stacklevel=2)
         return False
     return True
+
+
+def installed():
+    """Whether the PNG or PDF figure formatter of the running shell carries
+    the digest; False outside IPython."""
+    ip = _shell()
+    if ip is None:
+        return False
+    return any(getattr(f, '_figtools_digest', False) for _, f in _figure_formatters(ip))
+
+
+def uninstall():
+    """Put back the figure formatters `install()` wrapped; return whether any was.
+
+    Only the digest goes: the inline backend `install()` resolved stays.
+    Does nothing, and returns False, outside IPython or when no formatter
+    carries the digest.
+    """
+    from matplotlib.figure import Figure
+    ip = _shell()
+    if ip is None:
+        return False
+    changed = False
+    for registry, f in _figure_formatters(ip):
+        if getattr(f, '_figtools_digest', False):
+            registry.for_type(Figure, f._figtools_original)
+            changed = True
+    return changed
 
 
 # --- writing a digest out -----------------------------------------------------
@@ -892,7 +987,7 @@ def _panel_md(p, k):
         if kind in ('bars', 'intervals'):
             desc += f', {s["orientation"]}'
         if s.get('role') == 'guide':
-            desc += ', guide'
+            desc += ', reference curve'
         if s.get('named_by') == 'key':
             desc += ', named by the key'
         desc += ')'
@@ -1146,19 +1241,41 @@ def _table_from_html(rows):
     return lines
 
 
-def _embedded_image(src):
-    """(extension, bytes) of an image embedded as a `data:` source: PNG or PDF, else None."""
-    head, sep, body = src.partition(',')
-    if not sep:
-        return None
-    ext = ('png' if head.startswith('data:image/png')
-           else 'pdf' if head.startswith('data:application/pdf') else None)
-    if ext is None:
-        return None
-    try:
-        return ext, base64.b64decode(body)
-    except (ValueError, TypeError):
-        return None
+def _image(src, folder):
+    """(extension, bytes) of a page's image, or a sentence saying why there are none.
+
+    The image is embedded as a `data:` source, or linked by a path relative
+    to the page's folder `folder`, which is how Quarto writes a figure
+    unless the page embeds its resources: `<document>_files/figure-html/`
+    beside the page. An absolute address is not fetched. The bytes' own
+    signature says PNG or PDF; anything else is no figure this reads.
+    """
+    if not src:
+        return 'Image without a source; nothing digested.'
+    if src.startswith('data:'):
+        head, _, body = src.partition(',')
+        mime = head[len('data:'):].split(';')[0]
+        if mime not in ('image/png', 'application/pdf'):
+            return f'Image embedded as {mime or "untyped data"}, neither a PNG nor a PDF; nothing digested.'
+        try:
+            data = base64.b64decode(body)
+        except (ValueError, TypeError):
+            return 'Image embedded as data that is not base64; nothing digested.'
+        what = f'Image embedded as {mime}'
+    else:
+        parts = urlsplit(src)
+        if parts.scheme or parts.netloc or src.startswith('/'):
+            return f'Image linked by the absolute address {src}, which is not fetched; nothing digested.'
+        path = folder / unquote(parts.path)
+        if not path.is_file():
+            return f'Image file {path} not found; nothing digested.'
+        data = path.read_bytes()
+        what = f'Image file {path}'
+    if data.startswith(b'\x89PNG'):
+        return 'png', data
+    if data.startswith(b'%PDF'):
+        return 'pdf', data
+    return f'{what} holds neither a PNG nor a PDF; nothing digested.'
 
 
 def _write_csv(path, d):
@@ -1172,41 +1289,145 @@ def project_root(path):
     """The folder holding `_quarto.yml` above `path`; an error when there is none."""
     path = Path(path).resolve()
     for here in ([path] if path.is_dir() else []) + list(path.parents):
-        if (here / '_quarto.yml').exists() or (here / '_quarto.yaml').exists():
+        if _is_project(here):
             return here
     raise FileNotFoundError(f'{path}: no _quarto.yml in this folder or above it')
 
 
-def source_for(html):
-    """The one document beside a rendered page: its .py, .qmd or .ipynb."""
-    html = Path(html)
-    found = [html.with_suffix(s) for s in ('.py', '.qmd', '.ipynb') if html.with_suffix(s).exists()]
+def _is_project(folder):
+    """Whether `folder` exists and holds a `_quarto.yml` (or `_quarto.yaml`)."""
+    folder = Path(folder)
+    return folder.is_dir() and any((folder / name).is_file() for name in QUARTO_FILES)
+
+
+def _source_stem(output, output_dir=None, project=None):
+    """Where an output's source sits, without its suffix (see `source_for`)."""
+    output = Path(output)
+    if (output_dir is None) != (project is None):
+        raise ValueError('source_for: give output_dir and project together, or neither '
+                         'to look beside the output')
+    if output_dir is None:
+        return output
+    output_dir, project = Path(output_dir).resolve(), Path(project).resolve()
+    try:
+        return project / output.resolve().relative_to(output_dir)
+    except ValueError:
+        raise FileNotFoundError(f'{output}: not inside the output folder {output_dir}, '
+                                f'so it has no source in {project}') from None
+
+
+def _existing(stem, suffixes):
+    """Those of the files `stem` names with each of `suffixes` that exist."""
+    return [stem.with_suffix(s) for s in suffixes if stem.with_suffix(s).exists()]
+
+
+def source_for(output, output_dir=None, project=None):
+    """The document a rendered page or PDF was made from: its .py, .qmd or .ipynb.
+
+    Quarto writes an output to the same path under the project's output
+    folder (`output-dir`, a website's `_site`, a book's `_book`) as its
+    source has under the project folder; give both folders to look there.
+    Without them, or in a project with no output folder, where the two
+    coincide, the source sits beside the output. Exactly one of the three
+    files must exist.
+    """
+    stem = _source_stem(output, output_dir, project)
+    found = _existing(stem, SOURCES)
     if len(found) != 1:
         raise FileNotFoundError(
-            f'{html.name}: expected one source beside it, found '
-            f'{", ".join(f.name for f in found) or "none"}')
+            f'{output}: expected one source at {stem.with_suffix("")} with suffix '
+            f'{", ".join(SOURCES)}; found {", ".join(f.name for f in found) or "none"}')
     return found[0]
 
 
-def digest_dir(root, source, cache=CACHE_ROOT):
-    """Where a document's digest lands: the cache, the project, the document's path."""
+def _skip(f, output, output_dir, project):
+    """Why post-render leaves an output undigested, as the line it prints; None
+    when the output is to be digested, or its missing source is an error.
+
+    An output with no .py, .qmd or .ipynb source is skipped when a source
+    that runs no figtools code made it, such as a website's plain Markdown
+    page, or when it is a PDF, which a book writes from all its chapters at
+    once. Several sources, or none at all for a page, are left to
+    `source_for` to report.
+    """
+    stem = _source_stem(output, output_dir, project)
+    if _existing(stem, SOURCES):
+        return None
+    prose = _existing(stem, PROSE_SOURCES)
+    if Path(output).suffix.lower() == '.pdf':
+        made = f'its source {prose[0].name} runs no figtools code' if prose else (
+            'no single document made it, as with a book\'s PDF')
+        return f'digest: skipped {f}: {made}; render-digest figure {f} prints the digests it carries'
+    if prose:
+        return f'digest: skipped {f}: its source {prose[0].name} runs no figtools code'
+    return None
+
+
+def cache_root():
+    """The folder digests are filed under: the absolute folder the environment
+    variable `FIGTOOLS_DIGEST_DIR` names, or `CACHE_ROOT` when it is unset."""
+    value = os.environ.get('FIGTOOLS_DIGEST_DIR')
+    if value is None:
+        return CACHE_ROOT
+    path = Path(value).expanduser()
+    # A relative folder would move with the working directory, so `check`
+    # run from elsewhere would look in a different place than the render wrote.
+    if not value.strip() or not path.is_absolute():
+        raise ValueError(f'figtools.digest: FIGTOOLS_DIGEST_DIR must name an absolute '
+                         f'folder, got {value!r}; set it to one, or unset it to use {CACHE_ROOT}')
+    return path
+
+
+def digest_dir(root, source, cache=None):
+    """Where a document's digest lands: `<cache>/<project folder name>/<document
+    path without its suffix>`, the cache being `cache_root()` unless given."""
+    cache = cache_root() if cache is None else Path(cache)
     rel = Path(source).resolve().relative_to(Path(root).resolve()).with_suffix('')
-    return Path(cache) / Path(root).resolve().name / rel
+    return cache / Path(root).resolve().name / rel
 
 
 # --- the extraction -----------------------------------------------------------
 
-def _clear(out):
+def _clear(out, root=None):
     """Empty a digest folder's files, keeping its subfolders (a PDF render's digest
-    lives in `pdf/` under the page's); refuse a folder this did not write."""
+    lives in `pdf/` under the page's).
+
+    Refuses a folder this did not write, and one written for another project
+    than `root` that still exists: digests are filed under the project
+    folder's name, which two projects can share. A digest whose project
+    has moved or gone, its folder no longer holding a `_quarto.yml`, is
+    stale and is cleared. A manifest that records no project root, or a
+    `root` of None, leaves nothing to compare.
+    """
     out = Path(out)
     if out.exists():
         files = [p for p in out.iterdir() if p.is_file()]
-        if files and not (out / 'manifest.json').exists():
+        manifest = out / 'manifest.json'
+        if files and not manifest.exists():
             raise FileExistsError(f'{out}: holds files and no manifest; refusing to clear it')
+        if root is not None and manifest.exists():
+            theirs = json.loads(manifest.read_text(encoding='utf-8')).get('project_root')
+            ours = Path(root).resolve()
+            if _other_project(theirs, ours):
+                raise FileExistsError(
+                    f'{out}: holds the digest of the project at {theirs}, not of {ours}; the '
+                    f'two share a folder name. Set FIGTOOLS_DIGEST_DIR to another absolute '
+                    f'folder when rendering one of them.')
         for p in files:
             p.unlink()
     out.mkdir(parents=True, exist_ok=True)
+
+
+def _other_project(theirs, ours):
+    """Whether a manifest's project root `theirs` names a project other than
+    `ours` that still exists.
+
+    Path equality ignores case on Windows, and `ours` comes resolved, which
+    collapses junctions, so one project reached by two routes matches
+    itself. A root that no longer holds a `_quarto.yml` belongs to a project
+    that moved or was deleted, and its digest is stale rather than another's.
+    """
+    return theirs is not None and Path(theirs) != Path(ours) and _is_project(theirs)
 
 
 def _stamp(src, root, output):
@@ -1223,13 +1444,16 @@ def extract(html, out, source=None, root=None):
 
     `out` is emptied first, so a stale figure from an earlier render cannot
     survive; a folder that holds files and no manifest is refused, since it
-    is not one this wrote. `split` holds the labels of the figures whose
+    is not one this wrote, and so is one whose manifest names another
+    project root than `root` that still exists (`_clear`). Each figure's
+    image is read from the page, embedded in it or linked beside it
+    (`_image`). `split` holds the labels of the figures whose
     caption another output in the same cell took over (`_Page`); a caller
     driving a render is expected to fail on it, not note it.
     """
     html, out = Path(html), Path(out)
     src = Path(source) if source else source_for(html)
-    _clear(out)
+    _clear(out, root)
 
     page = _Page()
     page.feed(html.read_text(encoding='utf-8'))
@@ -1266,10 +1490,9 @@ def extract(html, out, source=None, root=None):
             captions = info['captions']
             caption = captions[0] if captions else None
             outer = captions[1] if len(captions) > 1 else None
-            image = _embedded_image(info['src'])
-            if image is None:
-                lines += [f'### {label}' + (f'. {caption}' if caption else ''), '',
-                          'Image not embedded as a PNG or PDF; nothing digested.', '']
+            image = _image(info['src'], html.resolve().parent)
+            if isinstance(image, str):
+                lines += [f'### {label}' + (f'. {caption}' if caption else ''), '', image, '']
                 continue
             ext, data = image
             (out / f'{name}.{ext}').write_bytes(data)
@@ -1287,6 +1510,7 @@ def extract(html, out, source=None, root=None):
     (out / 'outputs.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
     manifest = {'source': rel, 'sha256': sha, 'html': str(html), 'rendered': rendered,
                 'written': datetime.now(tz=UTC).astimezone().isoformat(timespec='seconds'),
+                'project_root': str(Path(root).resolve()) if root is not None else None,
                 'counts': counts, 'figures': figures, 'split': page.split}
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     summary = ', '.join(f'{v} {k[:-1] if v == 1 and k.endswith("s") else k}'
@@ -1303,7 +1527,7 @@ def extract_pdf(pdf, out, source=None, root=None):
     """
     pdf, out = Path(pdf), Path(out)
     src = Path(source) if source else source_for(pdf)
-    _clear(out)
+    _clear(out, root)
     digests = pdf_digests(pdf.read_bytes())
     rel, sha, rendered = _stamp(src, root, pdf)
     lines = [f'# Figures of {rel}, from its PDF render', '',
@@ -1319,39 +1543,57 @@ def extract_pdf(pdf, out, source=None, root=None):
     (out / 'outputs.md').write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
     manifest = {'source': rel, 'sha256': sha, 'pdf': str(pdf), 'rendered': rendered,
                 'written': datetime.now(tz=UTC).astimezone().isoformat(timespec='seconds'),
+                'project_root': str(Path(root).resolve()) if root is not None else None,
                 'counts': {'figures': len(digests)}}
     (out / 'manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     return f'{len(digests)} figure{"" if len(digests) == 1 else "s"} from the PDF'
 
 
 SPLIT_ADVICE = (
-    'A captioned figure cell produces the figure and nothing else. The cell\'s '
-    'last statement is displayed when it is an expression, so end it with '
-    'plt.show() rather than a bare ft.key(...), ft.dotplot(...) or '
-    'ax.set_xlabel(...), and give a table a cell of its own. README.md carries '
-    'the rule beside the other house rules.')
+    'A captioned figure cell produces the figure and nothing else; README.md '
+    'carries the rule. The cell\'s last statement is displayed when it is an '
+    'expression, and a matplotlib call such as a bare ax.set_xlabel(...) '
+    'returns an object that shows as a second output, as does a table. Give a '
+    'table a cell of its own, and end the figure cell with plt.show().')
+
+# What Quarto passes a post-render script: the outputs, relative to the
+# project folder, one per line; the project folder; its output folder, which
+# is the project folder itself when the project names none.
+_QUARTO_ENV = ('QUARTO_PROJECT_OUTPUT_FILES', 'QUARTO_PROJECT_DIR', 'QUARTO_PROJECT_OUTPUT_DIR')
 
 
-def post_render(cache=CACHE_ROOT):
+def post_render(cache=None):
     """Quarto's post-render hook: digest every page or PDF this render produced.
 
-    Fails the render when a page holds a figure whose caption another output
-    in the same cell took over: the page is written and digested first, so
-    the message names what to fix and the evidence is on disk.
+    Finds each output's source through `source_for`, in the project folder at
+    the path the output has under the output folder, and files the digest
+    under `cache` (`cache_root()` unless given). An output made by no .py,
+    .qmd or .ipynb, such as a plain Markdown page or a book's PDF, is
+    skipped with a line saying why (`_skip`). Fails the render when a page
+    holds a figure whose caption another output in the same cell took over:
+    the page is written and digested first, so the message names what to fix
+    and the evidence is on disk.
     """
-    files = [f.strip() for f in os.environ.get('QUARTO_PROJECT_OUTPUT_FILES', '').splitlines()
+    missing = [k for k in _QUARTO_ENV if not os.environ.get(k, '').strip()]
+    if missing:
+        raise SystemExit(f'render-digest post-render: {", ".join(missing)} '
+                         f'{"is" if len(missing) == 1 else "are"} empty or unset; this runs as '
+                         f'the post-render script of a Quarto project, which sets them')
+    files = [f.strip() for f in os.environ['QUARTO_PROJECT_OUTPUT_FILES'].splitlines()
              if f.strip()]
-    if not files:
-        raise SystemExit('render-digest post-render: QUARTO_PROJECT_OUTPUT_FILES is empty; '
-                         'this runs as the post-render script of a Quarto project')
-    root = Path.cwd()
+    root = Path(os.environ['QUARTO_PROJECT_DIR']).resolve()
+    output_dir = (root / os.environ['QUARTO_PROJECT_OUTPUT_DIR']).resolve()
     lost = {}
     for f in files:
         output = (root / f).resolve()
         kind = output.suffix.lower()
         if kind not in ('.html', '.pdf'):
             continue
-        src = source_for(output)
+        skipped = _skip(f, output, output_dir, root)
+        if skipped:
+            print(skipped)
+            continue
+        src = source_for(output, output_dir, root)
         out = digest_dir(root, src, cache)
         if kind == '.html':
             summary, split = extract(output, out, src, root)
@@ -1367,11 +1609,14 @@ def post_render(cache=CACHE_ROOT):
                          f'numbered the pair as subfigures. {SPLIT_ADVICE}')
 
 
-def check(document, cache=CACHE_ROOT):
+def check(document, cache=None):
     """0 when the digest matches the document, 1 when the source changed, 2 when there is none.
 
     Reads the page's digest, or the PDF render's when the document has only
-    been rendered to PDF.
+    been rendered to PDF, from `cache` (`cache_root()` unless given). A
+    digest another project of the same folder name wrote is none while that
+    project exists; once it has moved or gone, its digest is compared like
+    any other, so a moved project's unchanged document reads as fresh.
     """
     doc = Path(document).resolve()
     root = project_root(doc.parent)
@@ -1383,11 +1628,37 @@ def check(document, cache=CACHE_ROOT):
         print(f'no digest for {doc.name} at {folder}; render the document')
         return 2
     info = json.loads(manifest.read_text(encoding='utf-8'))
+    theirs = info.get('project_root')
+    if _other_project(theirs, root):
+        print(f'no digest for {doc.name}: {folder} holds the digest of the project at '
+              f'{theirs}, which shares this project\'s folder name; set FIGTOOLS_DIGEST_DIR '
+              f'to another absolute folder for one of them and render again')
+        return 2
     if info['sha256'] != hashlib.sha256(doc.read_bytes()).hexdigest():
         print(f'stale: {doc.name} changed after the render of {info["rendered"]}; '
               f'render it again before trusting {folder / "outputs.md"}')
         return 1
     print(f'fresh: {folder / "outputs.md"} matches {doc.name} (rendered {info["rendered"]})')
+    return 0
+
+
+def _locate(a):
+    """Run `where`, `check` or `extract` on the parsed arguments `a`; return the exit code."""
+    if a.cmd == 'where':
+        doc = a.document.resolve()
+        print(digest_dir(project_root(doc.parent), doc))
+        return 0
+    if a.cmd == 'check':
+        return check(a.document)
+    src = a.source or source_for(a.html)
+    root = project_root(src.parent)
+    out = a.out or digest_dir(root, src)
+    summary, split = extract(a.html, out, src, root)
+    print(f'digest: {summary} -> {out}')
+    if split:
+        print(f'{", ".join(split)} lost its caption to another output of '
+              f'the same cell. {SPLIT_ADVICE}', file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1397,7 +1668,7 @@ def main(argv=None):
     sub.add_parser('post-render', help='digest the pages of the render that just finished')
     w = sub.add_parser('where', help='print the folder a document\'s digest lands in')
     w.add_argument('document', type=Path)
-    c = sub.add_parser('check', help='exit 1 when the document changed since its digest')
+    c = sub.add_parser('check', help='exit 1 when the document changed since its digest, 2 with no digest')
     c.add_argument('document', type=Path)
     e = sub.add_parser('extract', help='digest one rendered page')
     e.add_argument('html', type=Path)
@@ -1409,21 +1680,23 @@ def main(argv=None):
 
     if a.cmd == 'post-render':
         post_render()
-    elif a.cmd == 'where':
-        doc = a.document.resolve()
-        print(digest_dir(project_root(doc.parent), doc))
-    elif a.cmd == 'check':
-        return check(a.document)
-    elif a.cmd == 'extract':
-        src = a.source or source_for(a.html)
-        root = project_root(src.parent)
-        out = a.out or digest_dir(root, src)
-        summary, split = extract(a.html, out, src, root)
-        print(f'digest: {summary} -> {out}')
-        if split:
-            print(f'{", ".join(split)} lost its caption to another output of '
-                  f'the same cell. {SPLIT_ADVICE}', file=sys.stderr)
-            return 1
+    elif a.cmd in ('where', 'check', 'extract'):
+        # A FIGTOOLS_DIGEST_DIR that names no usable folder leaves no digest
+        # to read either. Checked on its own so that any other ValueError
+        # still raises.
+        try:
+            cache_root()
+        except ValueError as e:
+            print(f'render-digest {a.cmd}: {e}', file=sys.stderr)
+            return 2
+        try:
+            return _locate(a)
+        except FileNotFoundError as e:
+            # A document outside any Quarto project, or a file that is not
+            # there: no digest to read, which is check's 2. The traceback's
+            # exit code, 1, would read as "the source changed" to a gate.
+            print(f'render-digest {a.cmd}: {e}', file=sys.stderr)
+            return 2
     elif a.cmd == 'figure':
         missing = 0
         for image in a.images:

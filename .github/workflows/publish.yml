@@ -1,0 +1,69 @@
+name: publish
+
+# Pushing a tag such as v0.8.0 builds the release and uploads it to PyPI by
+# trusted publishing, so no token is stored anywhere: PyPI accepts the upload
+# because it comes from this file, publish.yml, in fqueiro/figtools, running
+# in the environment named pypi. Those are the names the publisher on pypi.org
+# is registered with, and renaming any of them breaks the upload.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Read access by default; the publish job widens its own.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The build never pushes, so the checkout keeps no credentials that a
+      # later step could leak into the uploaded files.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # setup-uv publishes exact release tags only, no moving major tag.
+      - uses: astral-sh/setup-uv@v10.3.0
+      # A tag that disagrees with pyproject.toml would publish files under a
+      # version the tag does not name, and PyPI never accepts the same
+      # version twice, so the mistake could not be undone.
+      - name: Check that the tag names the version in pyproject.toml
+        run: |
+          version="$(uv version --short)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in pyproject.toml; tag v$version instead."
+            exit 1
+          fi
+      # A tag pushes this workflow on its own, without waiting for tests.yml,
+      # so the tests run here too and a tag on a broken commit stops before
+      # anything is built or uploaded. The lock file and the newest Python
+      # are what the locked jobs in tests.yml run.
+      - name: Test with the lock file
+        run: uv run --locked --python 3.14 pytest -q
+      # The sdist and the wheel, both into dist/.
+      - name: Build
+        run: uv build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment and the id-token permission are what trusted publishing
+    # checks; the token is minted for this job alone.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/figtools/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      # The action tags exact releases only, no moving major tag, so it is
+      # pinned to its latest release.
+      - uses: pypa/gh-action-pypi-publish@v1.14.2

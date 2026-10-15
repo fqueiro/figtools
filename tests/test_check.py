@@ -1,6 +1,8 @@
 """fig-check runs documents of every format and measures their figures."""
 
 import json
+import subprocess
+import sys
 
 import matplotlib
 import pytest
@@ -90,6 +92,17 @@ def test_figsize_merges_project_and_document_the_way_quarto_does(tmp_path):
     (doc.parent / '_metadata.yml').write_text('fig-height: 4\n',
                                               encoding='utf-8')
     assert fc.figsize(doc, fc.parse(doc)[0]) == (5.0, 4.0)
+
+
+def test_figsize_reads_front_matter_from_a_raw_string_cell(tmp_path):
+    """jupytext opens a prose cell with r\"\"\" when it holds a backslash,
+    so a document's front matter can sit in a raw string."""
+    doc = tmp_path / 'doc.py'
+    doc.write_text('# %% [markdown]\nr"""\n---\ntitle: Raw\nfig-width: 6\n---\n'
+                   'Inline $\\beta$.\n"""\n\n# %%\nx = 1\n', encoding='utf-8')
+    prose = fc.parse(doc)[0]
+    assert prose.startswith('---\ntitle: Raw')
+    assert fc.figsize(doc, prose) == (6.0, 5.0)
 
 
 def test_figsize_falls_to_quartos_html_default(tmp_path):
@@ -210,6 +223,142 @@ def test_check_runs_an_ipynb_and_skips_magics(tmp_path):
     n, found = fc.check(doc)
     assert n == 1
     assert found == []
+
+
+# A document that opens a figure and then fails on an import, and one whose
+# inline collision assert fails, which counts as overlaps.
+BROKEN = '''# %% [markdown]
+# ---
+# title: Broken
+# ---
+
+# %%
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1], [0, 1])
+import a_module_nobody_installed
+'''
+OVERLAPPING = QMD.replace('ft.label_lines(ax)', 'ft.label_lines(ax)\nassert False')
+
+
+def folder(tmp_path, **docs):
+    """Write documents into tmp_path, `name_ext=text` naming `name.ext`."""
+    for name, text in docs.items():
+        (tmp_path / name.replace('_', '.')).write_text(text, encoding='utf-8')
+    return tmp_path
+
+
+def lines(out):
+    """A worker's status lines, keyed by the document they open with."""
+    return {line.split()[0]: line for line in out.splitlines()
+            if line and not line.startswith(' ')}
+
+
+@pytest.fixture
+def _keep_sys_path(monkeypatch):
+    # main puts the documents' folder on the import path, as a worker needs.
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+
+
+@pytest.mark.usefixtures('_keep_sys_path')
+def test_worker_reports_a_crash_and_checks_the_documents_after_it(tmp_path, capsys):
+    """Python exits 1 on an uncaught exception, the code for overlaps, so a
+    broken document passed for one with overlaps and stopped the batch."""
+    docs = folder(tmp_path, broken_py=BROKEN, clean_py=PY,
+                  overlapping_qmd=OVERLAPPING)
+    assert fc.main([str(docs), '--worker']) == fc.CRASHED
+    out, err = capsys.readouterr()
+    assert 'a_module_nobody_installed' in err      # the traceback
+    status = lines(out)
+    assert status['broken.py'].split()[1:] == ['crashed']
+    # The figure the broken document left open is not counted as the next
+    # document's.
+    assert status['clean.py'].split()[1:] == ['1', 'figures', 'clean']
+    assert 'overlap(s)' in status['overlapping.qmd']
+    assert plt.get_fignums() == []
+
+
+@pytest.mark.usefixtures('_keep_sys_path')
+def test_worker_exit_code_says_what_it_found(tmp_path):
+    docs = folder(tmp_path, clean_py=PY, overlapping_qmd=OVERLAPPING,
+                  exits_py=PY.replace('ft.setup()', 'ft.setup()\nimport sys\nsys.exit()'))
+    assert fc.main([str(docs), 'clean', '--worker']) == fc.CLEAN
+    assert fc.main([str(docs), 'clean', 'overlapping', '--worker']) == fc.OVERLAPS
+    # A cell calling sys.exit() fails a render, and must not pass as clean.
+    assert fc.main([str(docs), 'exits', '--worker']) == fc.CRASHED
+
+
+def test_main_names_crashed_documents_apart_from_overlaps(tmp_path, capfd):
+    """End to end, one subprocess per document, as the command runs."""
+    docs = folder(tmp_path, broken_py=BROKEN, clean_py=PY,
+                  overlapping_qmd=OVERLAPPING)
+    assert fc.main([str(docs)]) == fc.CRASHED
+    out = capfd.readouterr().out
+    assert 'TOTAL: 3 document(s), 1 with overlaps, 1 crashed' in out
+    assert '  overlaps: overlapping.qmd' in out
+    assert '  crashed:  broken.py' in out
+
+
+def test_main_ranks_a_crash_above_overlaps_above_clean(tmp_path, monkeypatch, capsys):
+    """Any code but 0 and 1 is a crash: a dying interpreter (an access
+    violation, a kill) never reaches the worker's own handler."""
+    docs = folder(tmp_path, a_qmd=QMD, b_qmd=QMD, c_qmd=QMD)
+    codes, ran = {}, []
+
+    def fake(cmd, check):
+        ran.append(cmd[5])
+        return subprocess.CompletedProcess(cmd, codes[cmd[5]])
+
+    monkeypatch.setattr(fc.subprocess, 'run', fake)
+    codes.update({'a.qmd': 0, 'b.qmd': 1, 'c.qmd': 3221225477})
+    assert fc.main([str(docs)]) == fc.CRASHED
+    assert ran == ['a.qmd', 'b.qmd', 'c.qmd']      # all of them, in order
+    assert '  crashed:  c.qmd' in capsys.readouterr().out
+    assert fc.main([str(docs), 'a', 'b']) == fc.OVERLAPS
+    assert fc.main([str(docs), 'a']) == fc.CLEAN
+
+
+def test_main_runs_each_of_two_documents_sharing_a_stem_once(tmp_path, monkeypatch):
+    docs = folder(tmp_path, doc_py=PY, doc_qmd=QMD)
+    ran = []
+
+    def fake(cmd, check):
+        ran.append(cmd[5])
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(fc.subprocess, 'run', fake)
+    assert fc.main([str(docs), 'doc']) == fc.CLEAN
+    assert ran == ['doc.py', 'doc.qmd']
+    ran.clear()
+    assert fc.main([str(docs), 'doc.qmd']) == fc.CLEAN
+    assert ran == ['doc.qmd']
+
+
+def test_main_says_how_to_get_pyyaml_when_it_is_missing(tmp_path, monkeypatch, capsys):
+    (tmp_path / 'doc.py').write_text(PY, encoding='utf-8')
+    # None in sys.modules makes `import yaml` fail as if it were absent.
+    monkeypatch.setitem(sys.modules, 'yaml', None)
+    with pytest.raises(SystemExit) as died:
+        fc.main([str(tmp_path)])
+    assert died.value.code == fc.CRASHED
+    assert capsys.readouterr().err == fc.NEEDS_YAML + '\n'
+    assert 'pip install "figtools[check]"' in fc.NEEDS_YAML
+    # The functions that read YAML say the same when called directly.
+    with pytest.raises(ImportError, match=r'figtools\[check\]'):
+        fc.front_matter('---\nfig-width: 5\n---', 'doc.py')
+
+
+def test_importing_check_needs_no_pyyaml_and_keeps_the_backend():
+    """Importing the module from a notebook changes nothing: the backend is
+    set when the check runs, and PyYAML is imported where it is used."""
+    code = ('import sys; sys.modules["yaml"] = None\n'
+            'import matplotlib; matplotlib.use("pdf")\n'
+            'import figtools.check\n'
+            'print(matplotlib.get_backend())\n')
+    done = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                          text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == 'pdf'
 
 
 def test_check_reads_a_notebooks_front_matter_from_its_raw_cell(tmp_path):

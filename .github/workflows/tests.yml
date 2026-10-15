@@ -3,24 +3,45 @@ name: tests
 on:
   push:
   pull_request:
+  # Weekly, so a dependency released since the last push is tested without
+  # one: the newest job below meets a new matplotlib, and the oldest-
+  # dependencies job new releases of the packages the floors pull in.
+  # GitHub runs the schedule from the default branch only and pauses it
+  # after 60 days without a push to the repository.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # The oldest supported Python with the oldest declared versions of
           # every dependency, so the floors in pyproject.toml stay true.
-          - python: "3.11"
+          - os: ubuntu-latest
+            python: "3.11"
             resolution: lowest-direct
-          # The lock file, as the projects that use the library run it.
-          - python: "3.13"
+          # The lock file, as the projects that use the library run it, on
+          # the newest Python and on each of the three major platforms.
+          - os: ubuntu-latest
+            python: "3.14"
             resolution: locked
-    name: Python ${{ matrix.python }} (${{ matrix.resolution }})
+          - os: windows-latest
+            python: "3.14"
+            resolution: locked
+          - os: macos-latest
+            python: "3.14"
+            resolution: locked
+    name: Python ${{ matrix.python }} (${{ matrix.resolution }}, ${{ matrix.os }})
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # setup-uv publishes exact release tags only, no moving major tag.
       - uses: astral-sh/setup-uv@v10.3.0
       - name: Test with the lock file
@@ -29,3 +50,23 @@ jobs:
       - name: Test with the oldest declared dependencies
         if: matrix.resolution == 'lowest-direct'
         run: uv run --resolution lowest-direct --python ${{ matrix.python }} pytest
+
+  # The newest release of every dependency, ignoring the lock, on the newest
+  # Python. The library replaces matplotlib's linear scale with a subclass
+  # whose constructor follows an API matplotlib changes between versions
+  # (3.11 changed how a scale receives its axis), so a matplotlib release
+  # can break it before any project's lock reaches that release; this job
+  # finds out first.
+  newest:
+    runs-on: ubuntu-latest
+    name: Python 3.14 (newest releases, ubuntu-latest)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # setup-uv publishes exact release tags only, no moving major tag.
+      - uses: astral-sh/setup-uv@v10.3.0
+      # Without --upgrade, uv run keeps the versions in uv.lock whenever they
+      # satisfy pyproject.toml, which would test the lock again.
+      - name: Test with the newest releases
+        run: uv run --upgrade --python 3.14 pytest

@@ -42,10 +42,10 @@ def main():
     ft.refline(right, 0, 'no effect', axis='x')
     right.set_xlabel('Coefficient')
 
-    fig.savefig(Path(__file__).with_suffix('.png'), dpi=150)
     found = ft.collisions(fig)
     if found:
         raise SystemExit(f'readme_figure: labels collide: {found}')
+    fig.savefig(Path(__file__).with_suffix('.png'), dpi=150)
 
 
 if __name__ == '__main__':

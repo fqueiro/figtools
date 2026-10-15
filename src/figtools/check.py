@@ -9,21 +9,34 @@ with `figtools.collisions`, which is quicker than rendering and reading, and
 does not depend on noticing.
 
     uv run fig-check code
-    uv run fig-check code adoption_lifecycle
+    uv run fig-check code report
 
 With no document names it checks every document in the directory: each .qmd
 and .ipynb, and each .py that Quarto would render, which is one with a
 markdown or raw cell marker; a plain module has none and is left alone. A
-name that matches no document is an error, as is a directory without any.
-Each figure is drawn at the size the html render gives it: `fig-width` and
-`fig-height` from the document's front matter, the project's `_quarto.yml`
-and any `_metadata.yml`, merged as Quarto merges them, else Quarto's 7 by 5.
-Each document runs in the folder Quarto runs it in, its own unless the
-project's `_quarto.yml` sets `execute-dir: project`, so a path it reads
-relative to that folder resolves wherever the check is called from.
-Exits non-zero if anything overlaps, so it can gate a commit. `--figs DIR`
-writes each figure to DIR as a png, which is how to see what a reported
-overlap looks like.
+document is named by its stem or its file name, which tells apart two
+documents that share a stem. A name that matches no document is an error,
+as is a directory without any. Each figure is drawn at the size the html
+render gives it: `fig-width` and `fig-height` from the document's front
+matter, the project's `_quarto.yml` and any `_metadata.yml`, merged as
+Quarto merges them, else Quarto's 7 by 5. Each document runs in the folder
+Quarto runs it in, its own unless the project's `_quarto.yml` sets
+`execute-dir: project`, so a path it reads relative to that folder resolves
+wherever the check is called from. `--figs DIR` writes each figure to DIR
+as a png, which is how to see what a reported overlap looks like.
+
+Every document is checked, even after one fails, and the summary names the
+documents with overlaps and the documents that crashed separately. The exit
+code can gate a commit:
+
+    0  every figure is clean
+    1  some document has overlaps, and none crashed
+    2  some document raised an error (its traceback is printed), or the
+       check could not start: wrong arguments, or PyYAML missing. A
+       crashed document was not fully checked, so this outranks overlaps.
+
+Reading Quarto's settings needs PyYAML, which comes with the `check` extra:
+pip install "figtools[check]".
 """
 
 import argparse
@@ -34,18 +47,22 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 import warnings
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import matplotlib
-import yaml
-
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from figtools import collisions
 from figtools.digest import KEY, describe, encode
+
+# Exit codes, shared by the worker that checks a document and the command
+# that gathers the workers' results.
+CLEAN, OVERLAPS, CRASHED = 0, 1, 2
+NEEDS_YAML = ("fig-check reads Quarto's YAML settings and needs PyYAML: "
+              'pip install "figtools[check]"')
 
 CHUNK = re.compile(r'^```\{python\}\s*$(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 FRONT = re.compile(r'\A\s*---\s*\n(.*?)\n---\s*$', re.DOTALL | re.MULTILINE)
@@ -54,6 +71,11 @@ FRONT = re.compile(r'\A\s*---\s*\n(.*?)\n---\s*$', re.DOTALL | re.MULTILINE)
 MARKER = re.compile(r'^\s*#\s*%%+\s*(?:\[(markdown|raw)\])?\s*(.*)?$')
 PROSE = re.compile(r'^\s*#\s*%%+\s+\[(markdown|raw)\]', re.MULTILINE)
 QUOTE = re.compile(r'^"{3,}\s*$')
+# The opening quote of a prose string may also carry an r prefix, which
+# Quarto's own rule lacks: jupytext writes `r"""` for any cell holding a
+# backslash, as LaTeX does, and a Quarto patched to read it renders the
+# cell as prose like any other.
+OPEN_QUOTE = re.compile(r'^[rR]?"{3,}\s*$')
 
 
 def percent(text):
@@ -61,9 +83,9 @@ def percent(text):
 
     A cell opens at a `# %%` line: alone (or with a title) for code, with
     `[markdown]` or `[raw]` for prose. Lines before the first marker are
-    dropped. A prose cell is either one triple-quoted string or comment
-    lines, and comes back without its comment prefix, so the front matter
-    reads as YAML.
+    dropped. A prose cell is either one triple-quoted string, raw (`r\"\"\"`)
+    or not, or comment lines, and comes back without its quotes or comment
+    prefix, so the front matter reads as YAML.
     """
     cells = []
     for line in text.strip().splitlines():
@@ -78,7 +100,7 @@ def percent(text):
         while rows and not rows[-1].strip():
             rows.pop()
         if kind != 'code':
-            if len(rows) > 2 and QUOTE.match(rows[0]) and QUOTE.match(rows[-1]):
+            if len(rows) > 2 and OPEN_QUOTE.match(rows[0]) and QUOTE.match(rows[-1]):
                 rows = rows[1:-1]
             else:
                 rows = [re.sub(r'^#\s?', '', row) for row in rows]
@@ -106,6 +128,25 @@ def cells(notebook):
                             if not ln.lstrip().startswith(('%', '!')))
 
 
+def pyyaml():
+    """The PyYAML module, or an ImportError saying how to install it.
+
+    PyYAML is the `check` extra, since only fig-check reads YAML, so it is
+    imported here rather than with the module: importing figtools.check
+    works without it, and running a check without it says what to install.
+    """
+    try:
+        import yaml
+    except ImportError:
+        raise ImportError(NEEDS_YAML) from None
+    return yaml
+
+
+def load_yaml(text):
+    """Parse YAML text."""
+    return pyyaml().safe_load(text)
+
+
 def mapping(loaded, where):
     """A parsed YAML document as a dict, or a clear error naming its file."""
     if loaded is None:
@@ -118,7 +159,7 @@ def mapping(loaded, where):
 def front_matter(prose, where):
     """The YAML block a document's prose opens with; {} without one."""
     m = FRONT.match(prose)
-    return mapping(yaml.safe_load(m.group(1)), where) if m else {}
+    return mapping(load_yaml(m.group(1)), where) if m else {}
 
 
 def settings(folder):
@@ -133,7 +174,7 @@ def settings(folder):
         for name in ('_metadata.yml', '_quarto.yml', '_quarto.yaml'):
             path = here / name
             if path.exists():
-                loaded = yaml.safe_load(path.read_text(encoding='utf-8'))
+                loaded = load_yaml(path.read_text(encoding='utf-8'))
                 layers.append(mapping(loaded, path))
                 if name != '_metadata.yml':
                     return layers
@@ -175,7 +216,7 @@ def workdir(doc):
         for name in ('_quarto.yml', '_quarto.yaml'):
             path = here / name
             if path.exists():
-                loaded = mapping(yaml.safe_load(path.read_text(encoding='utf-8')), path)
+                loaded = mapping(load_yaml(path.read_text(encoding='utf-8')), path)
                 project = loaded.get('project') or {}
                 return here if project.get('execute-dir') == 'project' else doc.parent
     return doc.parent
@@ -277,10 +318,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('docs', type=Path,
                     help='directory holding the documents (.py, .qmd, .ipynb)')
-    ap.add_argument('names', nargs='*', help='document stems; default all')
+    ap.add_argument('names', nargs='*',
+                    help='document stems or file names; default all')
     ap.add_argument('--figs', type=Path, help='also write each figure here')
     ap.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
+    try:
+        pyyaml()
+    except ImportError as e:
+        # Before any document runs, so a missing extra is one message rather
+        # than the same crash once per document.
+        ap.exit(CRASHED, f'{e}\n')
 
     docs = a.docs.resolve()
     if not docs.is_dir():
@@ -289,14 +337,16 @@ def main(argv=None):
     if not found:
         ap.error(f'no documents in {docs} (a .py with a markdown cell, '
                  'a .qmd, or a .ipynb)')
-    missing = sorted(set(a.names) - {doc.stem for doc in found})
+    missing = sorted(set(a.names) - {doc.stem for doc in found}
+                     - {doc.name for doc in found})
     if missing:
         ap.error(f'no document named {", ".join(missing)} in {docs}; '
                  f'there: {", ".join(doc.name for doc in found)}')
     # The documents import their own domain modules (data loaders, semantic
     # colour maps) from the directory they live in.
     sys.path.insert(0, str(docs))
-    targets = [doc for doc in found if not a.names or doc.stem in a.names]
+    targets = [doc for doc in found
+               if not a.names or doc.stem in a.names or doc.name in a.names]
 
     if a.figs:
         # Absolute, since each document runs from its own working folder.
@@ -304,33 +354,57 @@ def main(argv=None):
         a.figs.mkdir(parents=True, exist_ok=True)
 
     if a.worker:
-        total = 0
+        # Figures are drawn and measured, never shown; a document's
+        # `plt.show()` is then a no-op instead of a window waiting to close.
+        matplotlib.use('Agg')
+        total, crashed = 0, False
         for doc in targets:
-            n, found = check(doc, a.figs)
+            try:
+                n, found = check(doc, a.figs)
+            except (Exception, SystemExit):  # noqa: BLE001
+                # Python exits 1 on an uncaught exception, which is the code
+                # for overlaps here, so a broken document is caught and
+                # reported as one. A cell calling `sys.exit()` fails a render
+                # too, and would otherwise pass as clean. Ctrl-C still stops.
+                traceback.print_exc()
+                # The failing cell's figures are still open, and the next
+                # document would measure them as its own.
+                plt.close('all')
+                crashed = True
+                print(f'{doc.name:28} crashed', flush=True)
+                continue
             total += len(found)
             print(f'{doc.name:28} {n:2} figures  '
                   f'{f"{len(found)} overlap(s)" if found else "clean"}',
                   flush=True)
             for line in found:
                 print(line, flush=True)
-        return 1 if total else 0
+        return CRASHED if crashed else OVERLAPS if total else CLEAN
 
     # One subprocess per document: a document's own renderer gives it a
     # fresh interpreter, and a batch of data-heavy documents run in one
-    # process accumulates into a MemoryError none of them hits alone.
-    bad = 0
+    # process accumulates into a MemoryError none of them hits alone. The
+    # file name, not the stem, so a stem two documents share runs one.
+    overlapped, crashed = [], []
     for doc in targets:
         cmd = [sys.executable, '-m', 'figtools.check', '--worker',
-               str(docs), doc.stem]
+               str(docs), doc.name]
         if a.figs:
             cmd += ['--figs', str(a.figs)]
         rc = subprocess.run(cmd, check=False).returncode
-        if rc not in (0, 1):
-            # The document itself crashed; surface that, don't count it.
-            return rc
-        bad += rc
-    print(f'\nTOTAL: {bad} document(s) with overlaps')
-    return 1 if bad else 0
+        if rc == OVERLAPS:
+            overlapped.append(doc.name)
+        elif rc != CLEAN:
+            # The worker's code for a document that raised, or whatever a
+            # dying interpreter returns (an access violation, a kill).
+            crashed.append(doc.name)
+    print(f'\nTOTAL: {len(targets)} document(s), {len(overlapped)} with '
+          f'overlaps, {len(crashed)} crashed')
+    if overlapped:
+        print(f'  overlaps: {", ".join(overlapped)}')
+    if crashed:
+        print(f'  crashed:  {", ".join(crashed)}')
+    return CRASHED if crashed else OVERLAPS if overlapped else CLEAN
 
 
 if __name__ == '__main__':

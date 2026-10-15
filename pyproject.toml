@@ -1,6 +1,6 @@
 [project]
 name = "figtools"
-version = "0.7.0"
+version = "0.8.0"
 description = "Matplotlib figure style inspired by Kieran Healy's Data Visualization: direct labels placed clear of each other and of the data, a measured overlap check, export at each destination's physical size, and a machine-readable digest of every figure's data"
 readme = "README.md"
 license = "MIT"
@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 requires-python = ">=3.11"
@@ -24,12 +25,20 @@ requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.9",
     "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+# fig-check reads the front matter of documents and Quarto's project files,
+# which are YAML; the library itself never parses YAML, so the core installs
+# without it and `figtools[check]` adds it.
+check = [
     "pyyaml>=6.0.2",
 ]
 
 [project.urls]
 Homepage = "https://github.com/fqueiro/figtools"
 Issues = "https://github.com/fqueiro/figtools/issues"
+Changelog = "https://github.com/fqueiro/figtools/blob/main/CHANGELOG.md"
 
 [project.scripts]
 fig-check = "figtools.check:main"
@@ -37,13 +46,19 @@ render-digest = "figtools.digest:main"
 
 [dependency-groups]
 # IPython and the inline backend are the notebook side the digest hooks into;
-# the library imports them only when running under a kernel. Polars is there
-# for the tests that pass its columns to the helpers as they are.
+# the library imports them only when running under a kernel. Polars and
+# pandas are there for the tests that pass their columns to the helpers as
+# they are; pandas starts at 2.2.2, the first release that works with NumPy
+# 2, since older ones either crash on import against it or refuse to install
+# beside it. PyYAML is there for the tests of fig-check, whose users get it
+# from the `check` extra.
 dev = [
     "pytest>=8",
     "ipython>=8",
     "matplotlib-inline>=0.1.7",
+    "pandas>=2.2.2",
     "polars>=1.44.2",
+    "pyyaml>=6.0.2",
 ]
 
 [build-system]
@@ -52,3 +67,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/figtools"]
+
+# The sdist carries the source, tests and docs a packager builds and checks
+# from. CLAUDE.md holds instructions for coding agents working in this repo
+# and .github the CI workflows; neither means anything outside it.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/CLAUDE.md",
+    "/.github",
+]

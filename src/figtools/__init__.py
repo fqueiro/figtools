@@ -1,17 +1,22 @@
-"""Shared figure style for research documents.
+"""A figure style and plotting helpers for research documents.
 
-One call to `setup()` at the top of a document and every figure in it matches
-every figure in every other project that uses this package: the style, the
-direct-labelling machinery that replaces legends, the small set of plot types
-the work actually uses (time series, dot plots, pointranges, binned and
-labelled scatters), the per-destination export, and the measurement that
-keeps direct labelling honest.
+One call to `setup()` at the top of a document, and every figure in it
+matches every other figure drawn with the package: the style, the direct
+labels that replace legends, helpers for the plot types common in empirical
+work (time series with bands, dot plots, pointranges, binned and labelled
+scatters), export at the physical size of each destination, and the
+measurement that keeps direct labelling honest. `style()` applies the same
+inside a `with` block and undoes it on leaving, for code that shares a
+process with other plotting.
 
 The choices are inspired by Kieran Healy's *Data Visualization*:
 
-  * One colour-blind-safe categorical palette (Tol vibrant), assigned in a
-    fixed order and never cycled, so a colour means the same entity
-    series-wide.
+  * One colour-blind-safe categorical palette (Tol vibrant), seven colours
+    assigned in a fixed order, so up to seven series in a panel each get a
+    colour of their own; matplotlib's cycle gives the eighth the first
+    colour again. Since a direct label names its series by colour,
+    `label_lines` refuses to name two series drawn alike, and `key` two
+    entries in one colour.
   * Direct labelling in place of legends. A legend forces a reader to hold a
     colour in memory and hop between the key and the line; a label at the end
     of the line does not. `label_lines`, `label_points` and `label_last` do
@@ -39,41 +44,55 @@ The choices are inspired by Kieran Healy's *Data Visualization*:
     by hand states its reason in a comment, and no helper moves it.
   * Two type sizes derived from one base (`setup(base=...)`): titles and
     axis labels at the base, every other piece of text half a point below.
-    One knob makes size drift between elements structurally impossible, and
-    turns the slide version of a figure into a larger base rather than a
-    retouching session.
+    The one exception is the names `label_points` and `label_scatter` print
+    at scatter points, two points smaller again so that many of them fit.
+    One knob makes size drift between elements structurally impossible,
+    and turns the slide version of a figure into a larger base rather than
+    a retouching session.
   * Figures leave the document at the physical size of their destination
     (`save`): the paper column, the slide slot. Included at natural size,
-    type lands on the page at its true point size; scaling at
-    includegraphics time is what un-sizes fonts.
+    type lands on the page at its true point size; scaling at inclusion
+    time is what un-sizes fonts.
 
-Position encodes value everywhere in this series; where a comparison is of
-magnitudes across categories, `dotplot` draws Cleveland dot plots instead of
-bars, which spend ink on a length the reader does not need.
+Position encodes value throughout; where a comparison is of magnitudes
+across categories, `dotplot` draws Cleveland dot plots instead of bars,
+which spend ink on a length the reader does not need.
 
 Direct labelling only works if the labels can be read, so the labels place
 themselves: each is moved clear of the others, of the plotted lines and of
 the markers, with a hairline leader once it has moved far enough that the
 pairing stops being obvious, and a label too wide for the figure is broken
 into two or three lines so the panel keeps its width. That has to happen
-when the figure is drawn,
-because it depends on how big the panel turned out to be, so it runs from a
-draw callback and recomputes on every draw rather than being decided when the
-label is created. `collisions` measures a drawn figure for what is left; it
-is the check to run on a figure rather than squinting at it.
+when the figure is drawn, because it depends on how big the panel turned
+out to be, so it runs from a draw callback and recomputes on every draw
+rather than being decided when the label is created. `collisions` measures
+a drawn figure for what is left; it is the check to run on a figure rather
+than squinting at it.
+
+The drawing helpers return what they drew (the lines, labels, bands and
+markers, for restyling), in a list that a notebook displays as nothing, so
+a helper call ending a cell prints no output between the figure and its
+caption. `binscatter` returns its bin means and slope the same way.
 
 A figure displayed in a notebook, and every PDF `save` writes, carries a
 digest of its plotted data inside the image file (`digest`), so a reader that
 cannot see the image, a program or a language model working from the
 rendered document or the paper, can still read the figure: its series,
-values, rules and annotations, and after a render the document's tables and
-printed output beside them.
+values, rules and annotations, and after a Quarto render the document's
+tables and printed output beside them. The digest holds the plotted values
+themselves, the observations of a scatter included: `setup(digest=False)`
+turns it off, and `save(..., digest=False)` leaves it out of one figure's
+files.
 """
 
+import contextlib
+import importlib.metadata
 import pickle
+import warnings
 from functools import partial
 from itertools import combinations, pairwise
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -85,14 +104,13 @@ __all__ = [
     'BASE_SIZE',
     'GREY',
     'PALETTE',
-    'PALETTE_LONG',
     'TARGET_WIDTHS',
+    '__version__',
     'band',
     'binscatter',
     'collisions',
     'dotplot',
     'grid_axis',
-    'guide',
     'key',
     'label_last',
     'label_lines',
@@ -101,29 +119,66 @@ __all__ = [
     'load',
     'panels',
     'pointrange',
+    'refcurve',
     'refline',
     'save',
     'setup',
     'shade',
+    'style',
 ]
+
+__version__ = importlib.metadata.version('figtools')
 
 # Neutral greys for non-data ink. Nothing structural is drawn in a palette
 # colour, so colour always means "this is a data series".
 GREY = {'rule': '0.45', 'grid': '0.88', 'text': '0.35', 'shade': '0.93'}
 
-# Fixed categorical colour order (Paul Tol's vibrant scheme, CVD-safe),
-# assigned to entities in fixed order, never cycled; at most four series per
-# chart. Blue-then-red keeps the temperament of the published AER figures
-# this style descends from while staying colour-blind safe; Tol's grey is
-# excluded because grey is the furniture channel here. Projects define their
-# own semantic maps (which entity gets which colour) on top of these; the
-# package owns only the colours and the fixed order.
-PALETTE = ['#0077BB', '#CC3311', '#009988', '#EE7733']
+# Fixed categorical colour order (Paul Tol's vibrant scheme, CVD-safe): seven
+# colours, assigned to series in this order, which is the colour cycle `setup`
+# sets. The cycle starts again at the eighth series, which is drawn like the
+# first; `label_lines` refuses to name two lines drawn alike, and `key` two
+# entries in one colour, since a direct label names its series by colour.
+# Up to four series the colours identify them on their own; past four,
+# colour identifies less well and the direct labels carry the
+# identification. Tol's grey is excluded because grey is the furniture
+# channel here. Projects define their own semantic maps (which entity gets
+# which colour) on top of these; the package owns only the colours and the
+# fixed order.
+PALETTE = ['#0077BB', '#CC3311', '#009988', '#EE7733',
+           '#33BBEE', '#EE3377', '#000000']
 
 # ggplot's theme base size. Titles and axis labels sit at the base and every
 # other piece of text half a point below (see setup); matplotlib's own 10pt
 # default reads small in a paper column or on a projected slide.
 BASE_SIZE = 11.0
+
+# Whether figures carry their digest: the choice the last `setup` made, which
+# `save` follows unless told otherwise.
+_digest_on = True
+
+
+class _Drawn(list):
+    """The artists a helper drew, in a list that a notebook displays as
+    nothing.
+
+    IPython calls `_ipython_display_` in place of showing the repr, so a
+    helper call ending a captioned notebook cell produces no output and
+    cannot split the caption. Everywhere else it is an ordinary list.
+    """
+
+    def _ipython_display_(self):
+        pass
+
+
+def _merged(defaults, kw, cls):
+    """A helper's `defaults` with the caller's keywords `kw` over them.
+
+    Both are put under matplotlib's full property names for `cls` first, so
+    an alias the caller passes (`c`, `lw`, `va`) overrides a default given
+    by its full name or by another alias.
+    """
+    normalize = mpl.cbook.normalize_kwargs
+    return {**normalize(defaults, cls), **normalize(kw, cls)}
 
 
 def _text_size():
@@ -135,14 +190,6 @@ def _text_size():
     except (TypeError, ValueError):
         raise RuntimeError('figtools helpers need setup() to have run '
                            f'(tick label size is {size!r})') from None
-
-
-# The rest of Tol vibrant (cyan, magenta) plus black, for the occasional
-# figure with more series than the four-colour working palette holds. Past
-# four categories colour stops doing the identifying on its own and the
-# direct labels carry it, so these are a way to keep the lines
-# distinguishable, not a way to name more entities.
-PALETTE_LONG = [*PALETTE, '#33BBEE', '#EE3377', '#000000']
 
 
 def _axis_data(axis):
@@ -245,26 +292,48 @@ class _LinearScale(mpl.scale.LinearScale):
         axis.set_major_locator(_WholeNumberLocator())
 
 
-def setup(base=BASE_SIZE):
+def setup(base=BASE_SIZE, digest=True):
     """Apply the figure style. Call once per document.
 
     `base` is the one typographic parameter. Titles and axis labels are set
     at `base`; ticks, line labels, key entries and annotations all sit half
     a point below it, resolved from the live rcParams by every helper, so
     the two sizes move together and nothing can drift apart element by
-    element. Scale a whole document (a slide deck, a poster) by changing
-    `base`, never by touching individual elements.
+    element. The one exception is the names `label_points` and
+    `label_scatter` print at scatter points, two points below the running
+    size, since many of them have to fit inside the panel. Scale a whole
+    document (a slide deck, a poster) by changing `base`, never by touching
+    individual elements.
 
-    In a notebook kernel this also arms the figure digest (`digest.install`):
-    every figure the kernel displays from here on carries its plotted data
-    inside its PNG. It runs before the style because resolving the inline
-    backend may apply the kernel's own rc settings, and the style below has
-    the last word.
+    `digest` decides whether figures carry a digest of their plotted data
+    (see `figtools.digest`). When true, every figure a notebook kernel
+    displays from here on carries it inside its PNG, and every PDF `save`
+    writes carries it in its metadata. The digest holds the plotted values
+    themselves, the observations of a scatter included, so pass
+    `digest=False` for figures of confidential data; `save(...,
+    digest=...)` decides for one figure's files. The digest is armed before
+    the style is applied because resolving the inline backend may apply the
+    kernel's own rc settings, and the style below has the last word.
+
+    The effects reach the whole process, not only the figures the calling
+    code draws: the rcParams change globally; matplotlib's linear scale is
+    replaced by one that refuses fractional ticks on whole-number data (see
+    `_WholeNumberLocator`), and every axes any library creates afterwards
+    gets it; and in a notebook kernel the formatters that display figures
+    are wrapped to add the digest. `style` applies the same inside a `with`
+    block and undoes it on leaving.
     """
+    global _digest_on
+    if not isinstance(digest, bool):
+        raise TypeError(f'setup: digest must be True or False, not {digest!r}')
     # Imported here, not at the top: `python -m figtools.digest` would
     # otherwise run a module the package had already imported.
-    from . import digest
-    digest.install()
+    from . import digest as _digest
+    if digest:
+        _digest.install()
+    else:
+        _digest.uninstall()
+    _digest_on = digest
     # Whole-number ticks on whole-number data (see `_WholeNumberLocator`).
     # There is no rcParam for the default locator, so the rule travels on
     # the scale every axes is created with.
@@ -273,6 +342,9 @@ def setup(base=BASE_SIZE):
     plt.rcParams.update({
         # Sizing. 110 dpi renders crisply in the HTML documents without
         # inflating them; savefig is higher for anything pulled into a paper.
+        # A plain `savefig` crops to the drawn content, so text running past
+        # the figure's edge is kept, since nothing checks for it there;
+        # `save` checks and writes the exact size instead.
         'figure.dpi': 110,
         'savefig.dpi': 200,
         'savefig.bbox': 'tight',
@@ -300,8 +372,7 @@ def setup(base=BASE_SIZE):
         'axes.titlepad': 6.0,
 
         # Frame. None: the grid and the floating tick labels carry every
-        # reference the reader needs, so spines are frame ink (the look of
-        # the published AER figures this style descends from). The edge
+        # reference the reader needs, so spines are frame ink. The edge
         # colour stays set for the figure that turns a spine back on.
         'axes.spines.top': False,
         'axes.spines.right': False,
@@ -341,16 +412,70 @@ def setup(base=BASE_SIZE):
         'patch.linewidth': 0,
         'axes.prop_cycle': mpl.cycler(color=PALETTE),
 
-        # Legends, for the rare figure that still needs one (more than four
-        # series, or series that end stacked on top of each other).
+        # Legends, for the rare figure that still needs one, where neither
+        # direct labels nor `key` suit.
         'legend.frameon': False,
         'legend.handlelength': 1.4,
         'legend.borderaxespad': 0.2,
     })
 
 
+@contextlib.contextmanager
+def style(base=BASE_SIZE, digest=True):
+    """Apply `setup` for the length of a `with` block, then undo it.
+
+    For code that shares a process with other plotting. On leaving the
+    block the rcParams are as they were on entering it, the linear scale is
+    the one registered then (matplotlib's own unless `setup` had run), and
+    the notebook's figure formatters carry the digest exactly when they did
+    then. Draw and save the figures inside the block: settings read only
+    when a figure is saved, such as the resolution of saved images, revert
+    on leaving.
+    """
+    global _digest_on
+    from . import digest as _digest
+    # matplotlib has no public way to read which class a scale name maps to,
+    # and re-registering that class is the only way to put it back.
+    scale = mpl.scale._scale_mapping['linear']
+    armed, choice = _digest.installed(), _digest_on
+    if digest:
+        # Arming the digest may resolve the notebook's inline backend, which
+        # switches on interactive mode; done inside the rc context, that
+        # would be reverted on leaving and later figures would no longer
+        # display. Resolving the backend is not part of the style.
+        _digest.install()
+    try:
+        with mpl.rc_context():
+            setup(base, digest)
+            yield
+    finally:
+        # The digest first: should putting the scale back raise, the choice
+        # `save` follows and the formatters are already as they were.
+        _digest_on = choice
+        if _digest.installed() != armed:
+            if armed:
+                _digest.install()
+            else:
+                _digest.uninstall()
+        # From matplotlib 3.11, registering a scale whose constructor takes
+        # the axis, as matplotlib's own linear scale still does, emits a
+        # PendingDeprecationWarning addressed to the scale's author; under
+        # `-W error` it would turn leaving the block into a crash. Registering
+        # rather than writing the class back into matplotlib's table also
+        # restores the record of whether the constructor wants the axis,
+        # without which new axes could not build the scale.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', category=PendingDeprecationWarning,
+                message=r".*uses an 'axis' parameter")
+            mpl.scale.register_scale(scale)
+
+
 def grid_axis(ax, axis):
     """Draw the grid on `axis` only ('x', 'y' or 'both')."""
+    if axis not in ('x', 'y', 'both'):
+        raise ValueError(f"grid_axis: axis must be 'x', 'y' or 'both', "
+                         f'not {axis!r}')
     ax.grid(False)
     ax.grid(True, axis=axis, color=GREY['grid'], linewidth=0.6, alpha=1.0)
     ax.set_axisbelow(True)
@@ -377,20 +502,24 @@ def _data_lines(ax):
     """
     return [ln for ln in ax.get_lines()
             if ln.get_transform() is ax.transData and len(ln.get_xdata()) > 1
-            and not getattr(ln, '_fs_guide', False)]
+            and not getattr(ln, '_figtools_refcurve', False)]
 
 
-def guide(ax, x: ArrayLike, y: ArrayLike, lw=1.0, **kw):
+def refcurve(ax, x: ArrayLike, y: ArrayLike, lw=1.0, **kw):
     """Draw a background reference curve: a fit, a 45-degree line, a bound.
 
     Grey and behind the series, because it summarises or frames the data
     rather than being one of the series, and marked as furniture so the
     labelling machinery does not treat it as a line to dodge. A label may sit
-    across it; that is what makes it a guide and not a series.
+    across it; that is what makes it a reference curve and not a series.
+    Keywords pass to `ax.plot` and override the defaults.
+
+    Returns the curve, in a one-element list.
     """
-    ln, = ax.plot(x, y, color=GREY['rule'], lw=lw, zorder=1, **kw)
-    ln._fs_guide = True
-    return ln
+    ln, = ax.plot(x, y, **_merged({'color': GREY['rule'], 'linewidth': lw,
+                                   'zorder': 1}, kw, mpl.lines.Line2D))
+    ln._figtools_refcurve = True
+    return _Drawn([ln])
 
 
 def _spread(ys, gap, lo=0.0, hi=1.0):
@@ -402,9 +531,9 @@ def _spread(ys, gap, lo=0.0, hi=1.0):
     by pooling adjacent violators (isotonic regression on the slack
     y - k*gap), and each run spreads centred on its own members. The
     alternative, pushing collisions apart and re-centring the whole block,
-    dragged every label in the margin off its line whenever a cluster
+    would drag every label in the margin off its line whenever a cluster
     anywhere in the panel needed spreading, sprouting leaders on labels
-    whose own space was never contested.
+    whose own space is not contested.
     """
     ys = list(ys)
     if len(ys) == 1:
@@ -741,7 +870,7 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
     if wrap is not None:
         cap = wrap * ax.figure.bbox.width
         for ann in anns:
-            text = _wrapped(renderer, ann, ann._fs_text, cap)
+            text = _wrapped(renderer, ann, ann._figtools_text, cap)
             if text != ann.get_text():
                 ann.set_text(text)
                 rewrapped = True
@@ -852,9 +981,9 @@ def _place(renderer, ax, anns, lines, ends, fixed, gap, wrap):
                           float(_to_data(ax, [(pos[i][0], final[i])])[0][1])))
         # A leader earns its ink only once the label sits clearly away from
         # its line end, beyond 1.5 of its own height: closer than that, the
-        # word's colour and the ladder's order already carry the pairing.
-        # The old fixed 2%-of-panel threshold was well under a label height,
-        # sprouting stubs on labels still level with their lines.
+        # word's colour and the ladder's order already carry the pairing,
+        # and a threshold under a label height would sprout stubs on labels
+        # still level with their lines.
         show = abs(final[i] - anchors[i][1]) > 1.5 * heights[i]
         if show != ann.arrow_patch.get_visible():
             moved = True
@@ -866,16 +995,17 @@ def _on_draw(event):
     """Re-run every deferred placement on this figure.
 
     Placement depends on the size of the axes box, which is not settled until
-    the figure is drawn (`tight_layout` runs after the labels are added). Each
-    job recomputes from its anchors, so running again is free when nothing has
-    changed and self-correcting when something has.
+    the figure is drawn: the layout engine sizes it at draw time, after the
+    labels have been added and with room for them. Each job recomputes from
+    its anchors, so running again is free when nothing has changed and
+    self-correcting when something has.
     """
     fig = event.canvas.figure
-    depth = getattr(fig, '_fs_depth', 0)
-    jobs = getattr(fig, '_fs_jobs', None)
+    depth = getattr(fig, '_figtools_depth', 0)
+    jobs = getattr(fig, '_figtools_jobs', None)
     if not jobs or depth >= 3:
         return
-    fig._fs_depth = depth + 1
+    fig._figtools_depth = depth + 1
     try:
         # The list is deliberate: `any` over a generator would stop at the
         # first job that moved something, leaving the rest unplaced.
@@ -883,16 +1013,16 @@ def _on_draw(event):
         if any(moved):
             fig.canvas.draw()
     finally:
-        fig._fs_depth = depth
+        fig._figtools_depth = depth
 
 
 def _defer(ax, job):
     """Run `job(renderer)` on every draw, and once now if we can."""
     fig = ax.figure
-    if not hasattr(fig, '_fs_jobs'):
-        fig._fs_jobs = []
+    if not hasattr(fig, '_figtools_jobs'):
+        fig._figtools_jobs = []
         fig.canvas.mpl_connect('draw_event', _on_draw)
-    fig._fs_jobs.append(job)
+    fig._figtools_jobs.append(job)
     # Place immediately as well, so positions are readable (and testable)
     # straight away rather than only once the figure has been drawn.
     r = _renderer(fig)
@@ -912,8 +1042,28 @@ def _renderer(fig):
 # edge would otherwise cut through the middle. A label starts `_LABEL_GAP` of
 # the panel width past its line end, which puts a margin label just beyond
 # the panel edge and an early-ending one just past where its line stops.
+# Both are distances on screen (see `_x_frac`), so a log axis gets the same
+# pad and gap as a linear one.
 _END_PAD = 0.012
 _LABEL_GAP = 0.018
+
+
+def _x_frac(ax, x):
+    """A data x as a fraction of the panel width, left to right as drawn.
+
+    Measured in the scale's own space, so equal steps are equal distances on
+    screen on a log axis as on a linear one, and in the direction the axis
+    is drawn, so on an inverted axis it grows towards smaller values. Values
+    past the limits give fractions outside [0, 1].
+    """
+    return float(ax.transAxes.inverted().transform(
+        ax.get_xaxis_transform().transform((x, 0.0)))[0])
+
+
+def _x_at(ax, frac):
+    """The data x at `frac` of the panel width, the inverse of `_x_frac`."""
+    return float(ax.get_xaxis_transform().inverted().transform(
+        ax.transAxes.transform((frac, 0.0)))[0])
 
 
 def _may_move(ax, axis):
@@ -926,7 +1076,7 @@ def _may_move(ax, axis):
     """
     auto = ax.get_autoscalex_on() if axis == 'x' else ax.get_autoscaley_on()
     now = ax.get_xlim() if axis == 'x' else ax.get_ylim()
-    return auto or tuple(now) == getattr(ax, f'_fs_{axis}lim', None)
+    return auto or tuple(now) == getattr(ax, f'_figtools_{axis}lim', None)
 
 
 def _set_lim(ax, axis, lo, hi):
@@ -936,43 +1086,67 @@ def _set_lim(ax, axis, lo, hi):
     shared = (ax.get_shared_x_axes() if axis == 'x'
               else ax.get_shared_y_axes()).get_siblings(ax)
     for a in shared:
-        setattr(a, f'_fs_{axis}lim',
+        setattr(a, f'_figtools_{axis}lim',
                 tuple(a.get_xlim() if axis == 'x' else a.get_ylim()))
 
 
-def _end_panel_at(ax, xend, span):
+def _end_panel_at(ax, xend, xstart):
     """End the panel a hair past `xend`, unless the x-limit was set by hand.
 
     Matplotlib's autoscale pads the data by 5% on each side, and a label hung
     past the last point would straddle that strip: gridlines under its first
     letters, the rest in the margin. So while the x-axis is still autoscaling
-    the right limit moves to the data end plus `_END_PAD` of `span`, and the
-    grid stops with the data. A limit set by hand is the figure's own
-    decision (a horizon drawn past the data) and stays. Shared x-axes are
-    treated as one: every panel ends at the latest end asked of any of them,
-    so a panel labelled later cannot clip the lines of one labelled earlier.
+    the right-hand limit as drawn (the smaller value on an inverted axis)
+    moves to the data end plus `_END_PAD` of the data's span from `xstart`,
+    measured on screen, and the grid stops with the data. A limit set by
+    hand is the figure's own decision (a horizon drawn past the data) and
+    stays. Shared x-axes are treated as one: every panel ends at the
+    rightmost end asked of any of them, so a panel labelled later cannot
+    clip the lines of one labelled earlier.
     """
     if not _may_move(ax, 'x'):
         return
+    span = _x_frac(ax, xend) - _x_frac(ax, xstart)
     shared = ax.get_shared_x_axes().get_siblings(ax)
-    xend = max([xend, *(a._fs_xend for a in shared if hasattr(a, '_fs_xend'))])
+    xend = max([xend, *(a._figtools_xend for a in shared
+                        if hasattr(a, '_figtools_xend'))],
+               key=partial(_x_frac, ax))
     for a in shared:
-        a._fs_xend = xend
-    _set_lim(ax, 'x', ax.get_xlim()[0], xend + _END_PAD * span)
+        a._figtools_xend = xend
+    _set_lim(ax, 'x', ax.get_xlim()[0],
+             _x_at(ax, _x_frac(ax, xend) + _END_PAD * span))
+
+
+def _look(line):
+    """What tells a line apart from another at a glance: its colour, line
+    style, dash pattern and marker."""
+    marker = line.get_marker()
+    if marker in (None, '', ' ', 'None', 'none'):
+        marker = 'none'
+    # Every custom dash pattern reports the line style '--', so the pattern
+    # itself is what separates two of them; matplotlib keeps it privately.
+    _, dashes = line._unscaled_dash_pattern
+    return (mpl.colors.to_hex(line.get_color()), line.get_linestyle(),
+            None if dashes is None else tuple(dashes), str(marker))
 
 
 def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
     """Label each data line at its right-hand end, in the line's own colour.
 
-    Replaces `ax.legend()`. Places one coloured label per line just past its
-    final finite value, hanging in the figure margin beyond the panel: the
-    panel stays the data region, the grid stops with the data, and the
-    layout engine reserves the space the labels need (see `setup`). While
-    the x-axis is still autoscaling the panel is ended a hair past the last
-    line end, since autoscale's own padding would leave the labels
-    straddling the panel edge; a right limit set by hand is kept, and if it
-    runs past the data the labels sit inside the panel at their line ends.
-    Shared x-axes end at the latest line end among the panels labelled.
+    Replaces `ax.legend()`. Call it once per axes, after plotting every
+    series; a second call is an error. Places one coloured label per line
+    just past the end of the line that is rightmost as drawn (its last
+    finite point when x runs left to right, its first on an inverted
+    axis), hanging in the figure margin beyond the panel: the panel stays
+    the data region, the grid stops with the data, and the layout engine
+    reserves the space the labels need (see `setup`). While the x-axis is
+    still autoscaling the panel is ended a hair past the rightmost line
+    end, since autoscale's own padding would leave the labels straddling
+    the panel edge; a right-hand limit set by hand is kept, and if it runs
+    past the data the labels sit inside the panel at their line ends.
+    Shared x-axes end at the rightmost line end among the panels labelled.
+    The gap between a line end and its label is a fixed share of the panel
+    width on screen, on a log axis as on a linear one.
 
     Labels are spread apart by their own measured height and moved clear of
     anything they would otherwise sit on: another label, a reference-line or
@@ -994,14 +1168,39 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
     the occasional figure that wants the labels further apart than they
     strictly need to be. `texts` overrides the labels; `x` forces a common
     label position.
+
+    Each label names its line by colour, so two lines drawn alike (one
+    colour, one line style, one marker) are an error: past the seventh
+    series the colour cycle comes round again. A line dashed or marked in
+    another series' colour is told apart by its dashes or markers.
+
+    Returns the labels.
     """
     fontsize = _text_size() if fontsize is None else fontsize
+    # A second call would label every line again, and its labels would
+    # dodge the first call's, so the figure would pass `collisions` with
+    # each series named twice.
+    if getattr(ax, '_figtools_labelled', False):
+        raise ValueError('label_lines: this axes is already labelled; call '
+                         'label_lines once per axes, after plotting every '
+                         'series')
     lines = _plotted_lines(ax)
     if not lines:
         raise ValueError('label_lines: no labelled lines on this axes')
     if texts is not None and len(texts) != len(lines):
         raise ValueError(f'label_lines: {len(texts)} texts for '
                          f'{len(lines)} lines')
+    drawn = {}
+    for ln in lines:
+        look = _look(ln)
+        if look in drawn:
+            raise ValueError(
+                f'label_lines: series {drawn[look].get_label()!r} and '
+                f'{ln.get_label()!r} are drawn alike ({look[0]}, line style '
+                f'{look[1]!r}, marker {look[3]!r}), so their labels cannot '
+                'tell them apart; pass colours explicitly when plotting them '
+                '(or a line style or marker that differs)')
+        drawn[look] = ln
 
     ends, starts = [], []
     for ln in lines:
@@ -1012,19 +1211,23 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
         ok = np.isfinite(xd) & np.isfinite(yd)
         if not ok.any():
             raise ValueError(f'label_lines: series {ln.get_label()!r} is empty')
-        j = np.flatnonzero(ok)[-1]
+        # The end labelled is the one rightmost as drawn: the last point of
+        # a series stored left to right, the first of one stored the other
+        # way round or drawn on an inverted axis. Ties go to the last.
+        k = np.flatnonzero(ok)
+        j = max((k[-1], k[0]), key=lambda i: _x_frac(ax, xd[i]))
         ends.append((xd[j], yd[j]))
-        starts.append(float(xd[ok].min()))
+        starts.append(min((xd[ok].min(), xd[ok].max()),
+                          key=partial(_x_frac, ax)))
 
-    xend = max(xe for xe, _ in ends)
-    _end_panel_at(ax, xend, xend - min(starts))
-    x0, x1 = ax.get_xlim()
+    _end_panel_at(ax, max((xe for xe, _ in ends), key=partial(_x_frac, ax)),
+                  min(starts, key=partial(_x_frac, ax)))
 
     # A line whose end the limits clip off cannot be labelled at its end:
     # the anchor sits outside the panel and the label would name a line that
     # visibly stops somewhere else. That is a limits problem in the calling
     # figure, raised as one rather than papered over.
-    xlo, xhi = sorted((x0, x1))
+    xlo, xhi = sorted(ax.get_xlim())
     ylo, yhi = sorted(ax.get_ylim())
     for ln, (xe, ye) in zip(lines, ends):
         if not (xlo <= xe <= xhi and ylo <= ye <= yhi):
@@ -1039,19 +1242,22 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
     # so a rule or a sibling panel's series added later just widens it.
     fixed = list(ax.texts)
 
+    ax._figtools_labelled = True
     anns = []
     for i, (ln, (xe, ye)) in enumerate(zip(lines, ends)):
-        # relpos attaches the stroke to the label's near edge. The default
-        # aims at the centre of the text box, so a leader to a label in the
-        # margin ladder tunnelled under whatever word sat between it and its
-        # line end; edge-attached, it stays in the gutter beside the column.
+        # relpos attaches the stroke to the label's near edge. Aimed at the
+        # centre of the text box, as matplotlib's default is, a leader to a
+        # label in the margin ladder would run under any word sitting
+        # between it and its line end; attached to the edge, it stays in
+        # the gutter beside the column.
         leader = {'arrowstyle': '-', 'color': ln.get_color(), 'lw': 0.6,
                   'alpha': 0.55, 'shrinkA': 0, 'shrinkB': 3,
                   'relpos': (0, 0.5), 'connectionstyle': 'arc3,rad=0'}
+        start = _x_frac(ax, x if x is not None else xe) + _LABEL_GAP
         ann = ax.annotate(
             texts[i] if texts is not None else ln.get_label(),
             xy=(xe, ye),
-            xytext=((x if x is not None else xe) + _LABEL_GAP * (x1 - x0), ye),
+            xytext=(_x_at(ax, start), ye),
             color=ln.get_color(), fontsize=fontsize,
             va='center', ha='left', clip_on=False, annotation_clip=False,
             arrowprops=leader,
@@ -1059,11 +1265,12 @@ def label_lines(ax, fontsize=None, gap=None, x=None, texts=None, wrap=0.2):
         ann.arrow_patch.set_visible(False)
         # The text as given: wrapping is re-decided from it at every draw,
         # so a label wrapped at one size can go back to one line at another.
-        ann._fs_text = ann.get_text()
+        ann._figtools_text = ann.get_text()
         anns.append(ann)
 
     _defer(ax, partial(_place, ax=ax, anns=anns, lines=lines, ends=ends,
                        fixed=fixed, gap=gap, wrap=wrap))
+    return _Drawn(anns)
 
 
 # Where a point label may sit, in order of preference: beside the point
@@ -1075,7 +1282,8 @@ _SPOTS = [('left', 'center', 1.0, 0.0), ('right', 'center', -1.0, 0.0),
 
 
 def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
-    """Find each point label a spot clear of the other labels and points."""
+    """Find each point label a spot clear of the other labels, the points
+    and the plotted lines."""
     inv = ax.transAxes.inverted()
     ap = ax.get_window_extent()
     # Offsets are given in points so they do not change with the data; the
@@ -1093,6 +1301,11 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
     marks += _marker_boxes(ax, 2.5)
     blocked = [_box(t, renderer, inv) for t in fixed if t.get_visible()]
     shapes = _shapes(ax)
+    # Lines and strokes (dumbbell connectors, stems, intervals) are data ink
+    # that `collisions` measures, so a label must not rest on one either.
+    # The stretch next to the point is left out, as `collisions` leaves it
+    # out, since a line through a point necessarily reaches it.
+    curves = [_curve(ax, ln) for ln in _data_lines(ax)] + _collection_curves(ax)
 
     # Greedy placement gives whoever goes first the closest spot, so let the
     # points in a cluster choose before the isolated ones, which still have
@@ -1106,6 +1319,8 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
         best = None
         # a shape holding the point (the bar or band it belongs to) is its own
         own = [s for s in shapes if not _holds(s, at[i])]
+        near = [c[np.hypot(c[:, 0] - at[i][0], c[:, 1] - at[i][1]) > 0.025]
+                for c in curves]
         for k in (1.0, 2.0, 3.4, 5.0, 7.0, 9.5, 12.0, 15.0):
             for ha, va, sx, sy in _SPOTS:
                 dx, dy = sx * k * offset * ux, sy * k * offset * uy
@@ -1117,7 +1332,7 @@ def _place_points(renderer, ax, anns, pts, cloud, fixed, offset):
                 if box.x0 < 0.002 or box.x1 > 0.998 or \
                         box.y0 < 0.002 or box.y1 > 0.998:
                     continue
-                if not _hits(box, blocked + marks, [], pad=0.005, shapes=own):
+                if not _hits(box, blocked + marks, near, pad=0.005, shapes=own):
                     best = (ha, va, sx * k * offset, sy * k * offset, k)
                     break
             if best:
@@ -1152,20 +1367,26 @@ def label_points(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
 
     A fixed offset per label works only until two points come close, and in a
     cluster the names overprint one another. This tries spots around each
-    point at growing distance and takes the first clear of the other labels
-    and of the points themselves, adding a hairline leader once a label has
-    been pushed far enough that which point it names stops being obvious.
+    point at growing distance and takes the first clear of the other labels,
+    of the points themselves and of the plotted lines and strokes (dumbbell
+    connectors, dot-plot stems, intervals), adding a hairline leader once a
+    label has been pushed far enough that which point it names stops being
+    obvious.
 
-    `color` is one colour for every label or one per label. `avoid` takes the
-    remaining (x, y) of a scatter when only some of its points are named, so
-    a label does not land on an unlabelled one.
+    `color` is one colour for every label (anything matplotlib reads as a
+    colour, an RGB tuple included) or a sequence of one per label. `avoid`
+    takes the remaining (x, y) of a scatter when only some of its points are
+    named, so a label does not land on an unlabelled one.
+
+    Returns the labels.
     """
     fontsize = _text_size() - 2 if fontsize is None else fontsize
     x, y, labels = list(x), list(y), list(labels)
     if not (len(x) == len(y) == len(labels)):
         raise ValueError(f'label_points: {len(x)} x, {len(y)} y, '
                          f'{len(labels)} labels')
-    colors = [color] * len(labels) if isinstance(color, str) else list(color)
+    colors = ([color] * len(labels) if mpl.colors.is_color_like(color)
+              else list(color))
     if len(colors) != len(labels):
         raise ValueError(f'label_points: {len(colors)} colours for '
                          f'{len(labels)} labels')
@@ -1184,7 +1405,7 @@ def label_points(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
         anns.append(ann)
     _defer(ax, partial(_place_points, ax=ax, anns=anns, pts=list(zip(x, y)),
                        cloud=list(avoid), fixed=fixed, offset=offset))
-    return anns
+    return _Drawn(anns)
 
 
 _CORNERS = ['upper left', 'upper right', 'lower right', 'lower left']
@@ -1260,13 +1481,26 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
     measured from the drawn entries, so it tracks the font and panel size;
     `lineheight` (axes fraction per entry) overrides it.
 
-    Returns the annotations it placed. That makes it a trap as the last
-    statement of a captioned figure cell, where the displayed list of Text
-    objects becomes a second output and Quarto renumbers the figure as
-    subfigures (a) and (b); end the cell with `plt.show()`. README.md has
-    the rule.
+    The colour of each word is all that ties it to its series, so two
+    entries in one colour are an error.
+
+    Returns the labels it placed, one per entry.
     """
     fontsize = _text_size() if fontsize is None else fontsize
+    if loc != 'auto' and loc not in _CORNERS:
+        raise ValueError(f"key: loc must be 'auto' or one of {_CORNERS}, "
+                         f'not {loc!r}')
+    entries = list(entries)
+    seen = {}
+    for text, color in entries:
+        c = mpl.colors.to_hex(color)
+        if c in seen:
+            raise ValueError(
+                f'key: entries {seen[c]!r} and {text!r} share the colour {c}, '
+                'and a key names each series by its colour alone; pass '
+                'colours explicitly, one of its own for each series, in the '
+                'plot and in the key')
+        seen[c] = text
     auto = loc == 'auto'
     order = _CORNERS if auto else [loc]
     fixed = list(ax.texts)
@@ -1278,9 +1512,12 @@ def key(ax, entries, loc='auto', fontsize=None, lineheight=None):
                         xytext=(0, 0), textcoords='offset points',
                         color=color, fontsize=fontsize, ha=ha, va=va)
             for i, (text, color) in enumerate(entries)]
+    # The digest reads these as names for the series drawn in their colours.
+    for ann in anns:
+        ann._figtools_key = True
     _defer(ax, partial(_place_key, ax=ax, anns=anns, entries=entries,
                        lineheight=lineheight, order=order, fixed=fixed))
-    return anns
+    return _Drawn(anns)
 
 
 def label_last(ax, x, y, text, color, dx=4, dy=0, fontsize=None, **kw):
@@ -1289,11 +1526,20 @@ def label_last(ax, x, y, text, color, dx=4, dy=0, fontsize=None, **kw):
     Past the panel's right edge it hangs in the margin like a `label_lines`
     label, and the layout engine makes room for it; end the panel at the
     data with `ax.set_xlim` so the grid stops where the labels start.
+    `dx` and `dy` offset the label from (x, y) in points. Keywords pass to
+    `ax.annotate` and override the defaults, the offset included: `xytext`
+    and `textcoords` replace `dx`, `dy` and the offset points.
+
+    Returns the label, in a one-element list.
     """
     fontsize = _text_size() if fontsize is None else fontsize
-    ax.annotate(text, xy=(x, y), xytext=(dx, dy), textcoords='offset points',
-                color=color, fontsize=fontsize, va='center', clip_on=False,
-                **kw)
+    ann = ax.annotate(text, xy=(x, y),
+                      **_merged({'xytext': (dx, dy),
+                                 'textcoords': 'offset points',
+                                 'color': color, 'fontsize': fontsize,
+                                 'va': 'center', 'clip_on': False},
+                                kw, mpl.text.Text))
+    return _Drawn([ann])
 
 
 def _headroom(ax, box, curves, want):
@@ -1398,8 +1644,8 @@ def _slide(renderer, ax, ann, axis, order, fixed, grow=False, rule=False):
     else:
         # The data fills the panel wherever this label could go. Make room at
         # the top once, rather than printing the label over a line.
-        if grow and not getattr(ann, '_fs_grew', False):
-            ann._fs_grew = True
+        if grow and not getattr(ann, '_figtools_grew', False):
+            ann._figtools_grew = True
             if _headroom(ax, box, curves, box.height + 0.04):
                 return True
         w = order[0]
@@ -1436,12 +1682,22 @@ def refline(ax, value, label=None, axis='y', where='auto', fontsize=None,
     never moved: a label that does not fit on its usual side goes to the
     other side of the rule if it fits there, and is otherwise left outside
     the panel for `collisions` to report.
+
+    `axis` is 'y' for a horizontal rule at a y value, 'x' for a vertical one
+    at an x value. Keywords pass to the rule (`ax.axhline` or `ax.axvline`)
+    and override the defaults.
+
+    Returns the rule, followed by its label when there is one.
     """
+    if axis not in ('x', 'y'):
+        raise ValueError(f"refline: axis must be 'x' or 'y', not {axis!r}")
     fontsize = _text_size() if fontsize is None else fontsize
     draw = ax.axhline if axis == 'y' else ax.axvline
-    draw(value, color=GREY['rule'], lw=lw, ls=ls, zorder=0.5, **kw)
+    rule = draw(value, **_merged({'color': GREY['rule'], 'linewidth': lw,
+                                  'linestyle': ls, 'zorder': 0.5},
+                                 kw, mpl.lines.Line2D))
     if label is None:
-        return
+        return _Drawn([rule])
     auto = where == 'auto'
     start = (0.02 if axis == 'y' else 0.9) if auto else where
     fixed = list(ax.texts)
@@ -1457,7 +1713,7 @@ def refline(ax, value, label=None, axis='y', where='auto', fontsize=None,
                           xytext=(_RULE_GAP, 0), textcoords='offset points',
                           color=GREY['text'], fontsize=fontsize,
                           ha='left', va='bottom')
-    ann._fs_inside = True   # names the rule in place, so belongs in the panel
+    ann._figtools_inside = True   # names the rule in place, so belongs in the panel
     if auto:
         order = (np.arange(0.02, 0.80, 0.025) if axis == 'y'
                  else np.arange(0.92, 0.05, -0.04))
@@ -1466,6 +1722,7 @@ def refline(ax, value, label=None, axis='y', where='auto', fontsize=None,
     else:
         _defer(ax, partial(_rule_side, ax=ax, ann=ann, axis=axis,
                            raise_top=False))
+    return _Drawn([rule, ann])
 
 
 def shade(ax, x0, x1, label=None, where='auto', fontsize=None, **kw):
@@ -1474,12 +1731,20 @@ def shade(ax, x0, x1, label=None, where='auto', fontsize=None, **kw):
     The name sits at the top of the band, or at the highest point down the
     band that the data leaves free when `where` is 'auto'; where the data
     leaves none, the top of the panel rises to make room while the y-axis
-    autoscales, and a top set by hand stays.
+    autoscales, and a top set by hand stays. Keywords pass to `ax.axvspan`
+    and override the defaults.
+
+    Returns the span, followed by its label when there is one.
     """
     fontsize = _text_size() if fontsize is None else fontsize
-    ax.axvspan(x0, x1, color=GREY['shade'], lw=0, zorder=0, **kw)
+    defaults = {'linewidth': 0, 'zorder': 0}
+    # `color` sets both face and edge, and matplotlib warns when it comes
+    # with either; a face or edge colour the caller gives replaces it.
+    if not {'facecolor', 'edgecolor', 'fc', 'ec'} & kw.keys():
+        defaults['color'] = GREY['shade']
+    span = ax.axvspan(x0, x1, **_merged(defaults, kw, mpl.patches.Patch))
     if label is None:
-        return
+        return _Drawn([span])
     auto = where == 'auto'
     fixed = list(ax.texts)
     ann = ax.annotate(label, xy=(x0 + 0.5 * (x1 - x0), 0.97 if auto else where),
@@ -1493,6 +1758,7 @@ def shade(ax, x0, x1, label=None, where='auto', fontsize=None, **kw):
         # a long slide that would leave it floating among the series.
         _defer(ax, partial(_slide, ax=ax, ann=ann, axis='x', fixed=fixed,
                            order=np.arange(0.97, 0.83, -0.035), grow=True))
+    return _Drawn([span, ann])
 
 
 def dotplot(ax, labels: ArrayLike, values: ArrayLike,
@@ -1510,8 +1776,9 @@ def dotplot(ax, labels: ArrayLike, values: ArrayLike,
     `ci` is a (lo, hi) pair of sequences, one interval per row, which turns
     the figure into a horizontal coefficient plot: the interval is drawn
     through the dot in the dot's own colour and the stems are dropped, since
-    the row is already carrying a line. Pair it with `refline(ax, 0)` when
-    zero is the hypothesis on trial.
+    the row is already carrying a line. Pair it with `refline(ax, 0,
+    axis='x')` when zero is the hypothesis on trial: the values lie along x,
+    so the zero rule is vertical.
 
     `ci` means an interval around the value the dot marks, so the dot
     belongs inside it. Two *alternative measurements* of the same quantity,
@@ -1526,17 +1793,25 @@ def dotplot(ax, labels: ArrayLike, values: ArrayLike,
     The pair then reads the same way whichever value is larger, and
     collapses to one mark where the two measurements agree.
 
-    Returns the axes, so a cell that ends on a bare call to this displays
-    it; see the cell rule in README.md.
+    `color` is one colour for every row (anything matplotlib reads as a
+    colour, an RGB tuple included) or a sequence of one per row.
+
+    Returns the interval or stem collection, when either is drawn, followed
+    by the markers.
     """
     labels, values = list(labels), np.asarray(values, float)
+    if len(labels) != len(values):
+        raise ValueError(f'dotplot: {len(labels)} labels for '
+                         f'{len(values)} values; pass one label per row')
     # `color` may be one colour for every row or one per row; a per-row list
     # has to be reordered alongside the values when sorting.
     color = PALETTE[0] if color is None else color
-    colors = [color] * len(values) if isinstance(color, str) else list(color)
+    colors = ([color] * len(values) if mpl.colors.is_color_like(color)
+              else list(color))
     if len(colors) != len(values):
         raise ValueError(f'dotplot: {len(colors)} colours for '
-                         f'{len(values)} values')
+                         f'{len(values)} values; pass one colour, or one '
+                         'per row')
     if ci is not None:
         lo, hi = (np.asarray(v, float) for v in ci)
         if not (len(lo) == len(hi) == len(values)):
@@ -1552,16 +1827,20 @@ def dotplot(ax, labels: ArrayLike, values: ArrayLike,
         if ci is not None:
             lo, hi = lo[o], hi[o]
     y = np.arange(len(values))
+    drawn = _Drawn()
     if ci is not None:
-        ax.hlines(y, lo, hi, color=colors, lw=1.4, alpha=0.85, zorder=2)
+        drawn.append(ax.hlines(y, lo, hi, color=colors, lw=1.4, alpha=0.85,
+                               zorder=2))
     elif stem:
-        ax.hlines(y, baseline, values, color=GREY['grid'], lw=1.2, zorder=1)
-    ax.scatter(values, y, color=colors, s=markersize ** 2, zorder=2)
+        drawn.append(ax.hlines(y, baseline, values, color=GREY['grid'],
+                               lw=1.2, zorder=1))
+    drawn.append(ax.scatter(values, y, color=colors, s=markersize ** 2,
+                            zorder=2))
     ax.set_yticks(y, labels)
     if _may_move(ax, 'y'):   # rows fill the panel, unless the caller set it
         _set_lim(ax, 'y', -0.7, len(values) - 0.3)
     grid_axis(ax, 'x')
-    return ax
+    return drawn
 
 
 def _texts_within(artist):
@@ -1657,6 +1936,12 @@ def collisions(fig, pad=0.004):
     that sits outside its panel is reported too: no helper moves a limit
     set by hand to make room for it.
 
+    The names `label_scatter` prints are the marks themselves. They may
+    overprint one another, which is overlapping observations, and sit on
+    lines, shapes and markers as a dot would, so neither is reported; any
+    other label over a name is a label/label collision, since it hides an
+    observation.
+
     Returns a list of (panel, kind, description) tuples, empty when clean.
     `kind` is 'label/label', 'label/line', 'label/shape', 'label/marker',
     'label/outside' or 'text/edge'.
@@ -1674,15 +1959,16 @@ def collisions(fig, pad=0.004):
         b = mpl.text.Text.get_window_extent(t, r)
         if b.x0 < -0.5 or b.y0 < -0.5 or b.x1 > W + 0.5 or b.y1 > H + 0.5:
             found.append((n, 'text/edge',
-                          f'{" ".join(t.get_text().split())!r} runs off '
-                          'the figure'))
+                          (f'{" ".join(t.get_text().split())!r} runs off '
+                           'the figure')))
     for n, ax in enumerate(fig.axes):
         inv = ax.transAxes.inverted()
-        # Names that ARE the marks (label_scatter) are data, not labels:
-        # overlapping names there are overlapping observations, which the
-        # figure is supposed to show.
-        texts = [t for t in ax.texts if t.get_visible() and t.get_text().strip()
-                 and not getattr(t, '_fs_mark', False)]
+        texts = [t for t in ax.texts if t.get_visible() and t.get_text().strip()]
+        # Names that are the marks themselves (`label_scatter`) are data:
+        # two of them overlapping are overlapping observations, which the
+        # figure is supposed to show, and a name sits on lines and markers
+        # as a dot would. Any other label over a name hides an observation.
+        named = [getattr(t, '_figtools_mark', False) for t in texts]
         boxes = [_box(t, r, inv) for t in texts]
         flat = [' '.join(t.get_text().split()) for t in texts]
         # A direct label is anchored to a point on its own line, so the line
@@ -1704,13 +1990,16 @@ def collisions(fig, pad=0.004):
             flat.append(' '.join(' '.join(t.get_text().split()) for t in parts))
             anchors.append(None)
             homes.append(None)
+            named.append(False)
 
         for i, j in combinations(range(len(boxes)), 2):
+            if named[i] and named[j]:
+                continue
             if _pad_box(boxes[i], pad).overlaps(boxes[j]):
                 found.append((n, 'label/label', f'{flat[i]!r} over {flat[j]!r}'))
         # A label naming a rule in place hovers over nothing outside the panel.
         for t, b, name in zip(texts, boxes, flat):
-            if getattr(t, '_fs_inside', False) and (
+            if getattr(t, '_figtools_inside', False) and (
                     b.x0 < -0.005 or b.y0 < -0.005 or b.x1 > 1.005 or b.y1 > 1.005):
                 found.append((n, 'label/outside', f'{name!r} sits outside its panel'))
 
@@ -1719,6 +2008,8 @@ def collisions(fig, pad=0.004):
                   for ln in _data_lines(ax)]
         curves += [('unlabelled stroke', c) for c in _collection_curves(ax)]
         for i, anchor in enumerate(anchors):
+            if named[i]:
+                continue
             for name, c in curves:
                 away = c if anchor is None else c[
                     np.hypot(c[:, 0] - anchor[0], c[:, 1] - anchor[1]) > 0.025]
@@ -1728,6 +2019,8 @@ def collisions(fig, pad=0.004):
 
         shapes, markers = _shapes(ax), _markers(ax)
         for i, (anchor, home) in enumerate(zip(anchors, homes)):
+            if named[i]:
+                continue
             box = _pad_box(boxes[i], pad)
             for s in shapes:
                 if (home is None or not _holds(s, home)) and _meets(box, s):
@@ -1758,6 +2051,8 @@ def band(ax, x: ArrayLike, lo: ArrayLike, hi: ArrayLike, color=None,
     line" rather than a shape of its own; pass `color` to override. Drawn
     with no edge and behind the lines, so the point estimate stays the
     figure and the band stays context.
+
+    Returns the band, in a one-element list.
     """
     lo, hi = np.asarray(lo, float), np.asarray(hi, float)
     if np.any(lo > hi):
@@ -1768,8 +2063,8 @@ def band(ax, x: ArrayLike, lo: ArrayLike, hi: ArrayLike, color=None,
             raise ValueError('band: no plotted line to take a colour from; '
                              'pass color=')
         color = lines[-1].get_color()
-    return ax.fill_between(x, lo, hi, color=color, alpha=alpha, lw=0,
-                           zorder=1.5)
+    return _Drawn([ax.fill_between(x, lo, hi, color=color, alpha=alpha, lw=0,
+                                   zorder=1.5)])
 
 
 def pointrange(ax, x: ArrayLike, y: ArrayLike, lo: ArrayLike, hi: ArrayLike,
@@ -1783,8 +2078,10 @@ def pointrange(ax, x: ArrayLike, y: ArrayLike, lo: ArrayLike, hi: ArrayLike,
     interval that say no more than its ends already do. For an event study,
     add `refline(ax, 0)` and, at the treatment date,
     `refline(ax, date, axis='x')`. `connect` joins the estimates, for a
-    profile read as a path. Returns the marker series; give it `label` and
-    `label_lines` treats it like any other series.
+    profile read as a path. Give it `label` and `label_lines` treats the
+    marker series like any other series.
+
+    Returns the marker series, followed by the interval collection.
     """
     x, y = np.asarray(x, float), np.asarray(y, float)
     lo, hi = np.asarray(lo, float), np.asarray(hi, float)
@@ -1798,9 +2095,9 @@ def pointrange(ax, x: ArrayLike, y: ArrayLike, lo: ArrayLike, hi: ArrayLike,
         kw['color'] = color
     ln, = ax.plot(x, y, marker=marker, ms=markersize,
                   lw=1.1 if connect else 0, **kw)
-    ax.vlines(x, lo, hi, color=ln.get_color(), lw=1.4, alpha=0.85,
-              zorder=ln.get_zorder())
-    return ln
+    bars = ax.vlines(x, lo, hi, color=ln.get_color(), lw=1.4, alpha=0.85,
+                     zorder=ln.get_zorder())
+    return _Drawn([ln, bars])
 
 
 def _ols_line(x, y):
@@ -1827,26 +2124,36 @@ def label_scatter(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
     The names sit exactly at their points and are never moved apart:
     position encodes value, and names overprinting each other in a cluster
     are overlapping observations, which the figure is supposed to show
-    (`collisions` exempts them for the same reason). Use `label_points`
-    when the marks should stay dots and the names annotate them.
+    (`collisions` lets them overlap one another for the same reason, but
+    reports any other label over a name). Use `label_points` when the marks
+    should stay dots and the names annotate them.
 
     `fit` draws the OLS line through the observations as a background
-    guide; `note` writes N and that fit's R² in the top-left corner.
+    reference curve (`refcurve`); `note` writes N and that fit's R² in the
+    top-left corner, at the running text size. The names print two points
+    below it, as `label_points` does. `color` is one colour for every name (anything
+    matplotlib reads as a colour, an RGB tuple included) or a sequence of
+    one per name.
+
+    Returns the names, followed by the fit line and the note when drawn.
     """
     x, y, labels = list(x), list(y), list(labels)
     if not (len(x) == len(y) == len(labels)):
         raise ValueError(f'label_scatter: {len(x)} x, {len(y)} y, '
                          f'{len(labels)} labels')
     color = PALETTE[0] if color is None else color
-    colors = [color] * len(labels) if isinstance(color, str) else list(color)
+    colors = ([color] * len(labels) if mpl.colors.is_color_like(color)
+              else list(color))
     if len(colors) != len(labels):
         raise ValueError(f'label_scatter: {len(colors)} colours for '
                          f'{len(labels)} labels')
     fontsize = _text_size() - 2 if fontsize is None else fontsize
+    drawn = _Drawn()
     for xi, yi, text, c in zip(x, y, labels, colors):
         t = ax.annotate(str(text), xy=(xi, yi), ha='center', va='center',
                         color=c, fontsize=fontsize)
-        t._fs_mark = True
+        t._figtools_mark = True
+        drawn.append(t)
     # Text does not autoscale the axes the way plotted artists do, so feed
     # the points into the data limits by hand or the panel ignores them.
     xa, ya = np.asarray(x, float), np.asarray(y, float)
@@ -1856,25 +2163,61 @@ def label_scatter(ax, x: ArrayLike, y: ArrayLike, labels: ArrayLike,
         b, r2 = _ols_line(xa, ya)
         if fit:
             gx = np.array([xa.min(), xa.max()])
-            guide(ax, gx, b[0] + b[1] * gx)
+            drawn += refcurve(ax, gx, b[0] + b[1] * gx)
         if note:
-            ax.annotate(f'N = {len(x)}   R² = {r2:.2f}', xy=(0.02, 0.97),
-                        xycoords='axes fraction', ha='left', va='top',
-                        color=GREY['text'], fontsize=_text_size() - 1)
+            drawn.append(ax.annotate(
+                f'N = {len(x)}   R² = {r2:.2f}', xy=(0.02, 0.97),
+                xycoords='axes fraction', ha='left', va='top',
+                color=GREY['text'], fontsize=_text_size()))
+    return drawn
+
+
+class _Binned(NamedTuple):
+    """What `binscatter` returns: the bin means of x and of y, and the fit's
+    slope (None without a fit). Like `_Drawn`, a notebook displays it as
+    nothing."""
+
+    x: np.ndarray
+    y: np.ndarray
+    slope: float | None
+
+    def _ipython_display_(self):
+        pass
 
 
 def binscatter(ax, x: ArrayLike, y: ArrayLike,
                controls: ArrayLike | None = None, bins=20, color=None,
                fit=True):
-    """Binned scatter: equal-count bin means of y on x, with an OLS fit.
+    """Binned scatter: the mean of y within quantile bins of x, with an OLS
+    fit.
 
-    `controls` residualises both x and y on the controls (with an
-    intercept) before binning, the Frisch-Waugh picture, and adds each
-    variable's mean back so the panel stays in the units of the raw data.
+    The bins are cut at the quantiles of x, as Stata's `xtile` cuts them,
+    and every observation with the same x falls in the same bin, so `bins`
+    is a maximum: a mass point that spans several quantiles makes one bin,
+    and the bins it empties are dropped. Where x takes at most `bins`
+    distinct values, each value is its own bin. Splitting tied values
+    across bins would draw sampling noise among identical x as if it were
+    variation along x. The bins depend only on the data, not on the order
+    of the rows.
+
+    `controls`, call them w, residualises both x and y on w, with an
+    intercept, before binning, and adds each variable's mean back so the
+    panel stays in the units of the raw data. By Frisch-Waugh-Lovell the
+    fitted slope is then the coefficient on x in the regression of y on x
+    and w. The bin means trace E[y | x, w] only when it is linear in x:
+    otherwise the residualised picture can misstate its shape, as
+    Cattaneo, Crump, Farrell and Feng (2024), "On Binscatter", American
+    Economic Review, show, along with a construction that avoids it.
+
     The fit line's slope comes from the underlying observations, not the
-    bin means: the dots are the visual, the microdata are the estimate.
+    bin means: the dots are the visual, the microdata are the estimate. The
+    line runs from the first bin mean to the last, as Stata's `binscatter`
+    draws it, so the panel frames the dots.
     Missing values are an error rather than silently dropped; filter them
-    before calling. Returns (bin means of x, bin means of y, slope).
+    before calling.
+
+    Returns the bin means of x, the bin means of y and the slope, as a
+    named tuple (`x`, `y`, `slope`) that unpacks like a plain one.
     """
     x, y = np.asarray(x, float), np.asarray(y, float)
     if x.ndim != 1 or x.shape != y.shape:
@@ -1892,22 +2235,47 @@ def binscatter(ax, x: ArrayLike, y: ArrayLike,
         by, *_ = np.linalg.lstsq(C, y, rcond=None)
         x = x - C @ bx + x.mean()
         y = y - C @ by + y.mean()
-    if not 1 <= bins <= len(x):
-        raise ValueError(f'binscatter: {bins} bins for {len(x)} observations')
-    order = np.argsort(x)
+    if (not isinstance(bins, (int, np.integer)) or isinstance(bins, bool)
+            or not 1 <= bins <= len(x)):
+        raise ValueError(f'binscatter: bins must be a whole number from 1 to '
+                         f'{len(x)} (the number of observations), not '
+                         f'{bins!r}')
+    # Sorted on y within tied x as well, so the rows reach every sum below
+    # in one order whatever order they came in, and the means agree to the
+    # last digit.
+    order = np.lexsort((y, x))
     x, y = x[order], y[order]
-    edges = np.linspace(0, len(x), bins + 1).astype(int)
-    xm = np.array([x[a:b].mean() for a, b in pairwise(edges)])
-    ym = np.array([y[a:b].mean() for a, b in pairwise(edges)])
+    values = np.unique(x)
+    if len(values) <= bins:
+        cell = np.searchsorted(values, x)
+    else:
+        # Stata's default percentiles (`_pctile`, which `xtile` uses): with
+        # P = n k / bins, cut k is the mean of the P-th and next order
+        # statistics when P is whole, otherwise the order statistic just
+        # above P. Integer arithmetic decides which, so no cut depends on
+        # rounding. An observation goes in bin k when it is above cut k-1
+        # and at most cut k, so tied values share a bin.
+        nk = len(x) * np.arange(1, bins)
+        j = nk // bins
+        cuts = np.where(nk % bins == 0, (x[j - 1] + x[j]) / 2, x[j])
+        cell = np.searchsorted(cuts, x, side='left')
+    _, cell = np.unique(cell, return_inverse=True)   # empty bins dropped
+    count = np.bincount(cell)
+    xm = np.bincount(cell, weights=x) / count
+    ym = np.bincount(cell, weights=y) / count
     ax.scatter(xm, ym, color=PALETTE[0] if color is None else color,
                s=5.5 ** 2, zorder=2)
     slope = None
     if fit:
         b, _ = _ols_line(x, y)
-        gx = np.array([x[0], x[-1]])
-        guide(ax, gx, b[0] + b[1] * gx)
+        # Across the dots, not the observations: with skewed x the largest
+        # observations sit far beyond the last bin mean, and a line drawn
+        # out to them would run where no dot is shown and set the panel's
+        # width by the single most extreme one. The bin means are sorted.
+        gx = np.array([xm[0], xm[-1]])
+        refcurve(ax, gx, b[0] + b[1] * gx)
         slope = float(b[1])
-    return xm, ym, slope
+    return _Binned(xm, ym, slope)
 
 
 def panels(n=2, aspect=0.68, width=None, **kw):
@@ -1923,46 +2291,106 @@ def panels(n=2, aspect=0.68, width=None, **kw):
     return plt.subplots(1, n, figsize=(w, w / n * aspect), **kw)
 
 
-# Physical widths, in inches, that `save` renders at, one per destination.
-# Papers here are 12pt articles with a 6-6.5 inch text column, so 5.9in is
-# the old 0.9\textwidth convention made physical; decks are 16:9 beamer
-# frames 6.3in wide, and 4.1in is the 0.65\linewidth slot a figure usually
-# gets on one. Saved at final size and included at natural size
+# Physical widths, in inches, that `save` renders at, one per destination;
+# defaults, which `save(..., widths=...)` adjusts or extends. 5.9in sits
+# inside a 6 to 6.5 inch text column, the usual one of a 12pt article, with
+# a little room to spare. 4.1in is the slot a figure usually gets on a 16:9
+# beamer frame 6.3in wide, about two thirds of it, leaving room for a title
+# and a line of text. Saved at final size and included at natural size
 # (\includegraphics with no width option), type lands on the page at the
 # exact point size `setup` chose; scaling at inclusion time is what
 # un-sizes fonts.
 TARGET_WIDTHS = {'paper': 5.9, 'slides': 4.1}
 
 
-def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
+def _image_suffixes():
+    """Extensions of the formats other than PDF that matplotlib saves to,
+    which `save` refuses in a path: it writes PDFs, and would otherwise
+    write `fig.png.pdf`.
+
+    Read from matplotlib at each call rather than listed here, so a format
+    a matplotlib release or a backend adds is refused too.
+    """
+    types = mpl.backend_bases.FigureCanvasBase.get_supported_filetypes()
+    return {f'.{t.lower()}' for t in types} - {'.pdf'}
+
+
+def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     """Write `path`.pdf for the paper and `path`_<target>.pdf for the rest.
 
-    Re-renders the figure at each target's physical width (height keeps the
-    figure's aspect ratio), letting the deferred label placement re-solve
-    for that size, and refuses to write any variant whose labels collide or
-    whose text runs off the figure: a bad figure on disk outlives the
-    session that could have noticed it.
-    The figure is restored to its on-screen size afterwards.
+    Each PDF is exactly its target's physical width, its height keeping the
+    figure's aspect ratio. The figure is re-rendered at that size, letting
+    the deferred label placement re-solve for it, and written whole rather
+    than cropped to its content, so figures built alike come out the same
+    size. `save` refuses to write any variant whose labels collide or whose
+    text runs off the figure: a bad figure on disk outlives the session
+    that could have noticed it. The figure is restored to its on-screen size
+    afterwards.
 
-    Each PDF carries the figure's digest, its plotted data, in its document
-    information (see `digest`), so `render-digest figure <file>` reads the
-    figure back without the document that made it.
+    `path` names the files without an extension. A final '.pdf' is dropped;
+    the extension of any other format matplotlib saves to ('.png', '.pgf',
+    '.svgz') is an error, since only PDFs are written; any other suffix
+    ('fig.v2') is part of the name.
 
-    `widths` adds or overrides target widths, e.g. {'poster': 9.0}.
-    `retouch=True` also pickles the live figure beside the PDFs; `load`
-    reopens it for hand-adjustment without rerunning the analysis.
+    `targets` names the destinations to write. None, the default, writes
+    paper and slides, then every other target `widths` names, in the order
+    given. `widths` maps targets to widths in inches: a new name adds a
+    target, as {'poster': 9.0} adds `path`_poster.pdf, and 'paper' or
+    'slides' overrides its width in `TARGET_WIDTHS`. With `targets` given,
+    each target `widths` names must be among them, so a width passed for
+    a file that is not written is an error rather than ignored.
+
+    `digest` decides whether each PDF carries the figure's digest, its
+    plotted data, in its document information (see `figtools.digest`),
+    from which `render-digest figure <file>` reads the figure back without
+    the document that made it. None follows `setup`'s choice, on unless
+    `setup(digest=False)`; True or False decides for these files alone.
+
+    `retouch=True` also pickles the live figure beside the PDFs, as
+    `path`.pkl, stamped with this figtools version; `load` reopens it for
+    hand-adjustment without rerunning the analysis.
+
+    Returns the paths written.
     """
-    from . import digest
+    from . import digest as _digest
+    if digest is not None and not isinstance(digest, bool):
+        raise TypeError(f'save: digest must be None, True or False, '
+                        f'not {digest!r}')
+    embed = _digest_on if digest is None else digest
     path = Path(path)
-    if path.suffix == '.pdf':
+    if path.suffix.lower() == '.pdf':
         path = path.with_suffix('')
+    elif path.suffix.lower() in _image_suffixes():
+        raise ValueError(f'save: writes PDFs only, so give the path without '
+                         f'an extension: {path.with_suffix("")} rather than '
+                         f'{path}')
     if not path.parent.is_dir():
         raise FileNotFoundError(f'save: no such directory {path.parent}')
-    sizes = TARGET_WIDTHS | (widths or {})
+    widths = dict(widths or {})
+    sizes = TARGET_WIDTHS | widths
+    if targets is None:
+        targets = ['paper', 'slides',
+                   *(t for t in widths if t not in ('paper', 'slides'))]
+    elif isinstance(targets, str):
+        raise ValueError(f'save: targets is a sequence of names, such as '
+                         f'({targets!r},), not the string {targets!r}')
+    else:
+        # A list, since the checks below and the writing each pass over it,
+        # and a generator would be spent after the first.
+        targets = list(targets)
+    if not targets:
+        raise ValueError('save: targets is empty, so nothing would be written')
     unknown = [t for t in targets if t not in sizes]
     if unknown:
         raise ValueError(f'save: unknown targets {unknown}; '
                          f'known: {sorted(sizes)}')
+    left_out = [t for t in widths if t not in targets]
+    if left_out:
+        raise ValueError(f'save: widths names {left_out}, which targets '
+                         f'{list(targets)} leaves out, so nothing would use '
+                         f'those widths; add them to targets, or leave '
+                         f'targets out to write paper, slides and every '
+                         f'target widths names')
     w0, h0 = fig.get_size_inches()
     written = []
     try:
@@ -1978,18 +2406,31 @@ def save(fig, path, targets=('paper', 'slides'), widths=None, retouch=False):
                                    f'written for it:\n{what}')
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
-            with digest._quiet_pdf_metadata(), digest._keep_layout(fig):
-                fig.savefig(out, metadata=digest.pdf_metadata(digest.describe(fig)))
+            meta = (_digest.pdf_metadata(_digest.describe(fig)) if embed
+                    else {})
+            # The whole figure, not the tight box `setup` sets for other
+            # saves: that box crops to the drawn content and pads it, so
+            # each file would miss its target width by its own amount.
+            # There is nothing here for cropping to keep, since the check
+            # above refuses text past the figure's edge. Passing
+            # bbox_inches=None would not do: savefig reads None as the
+            # rcParam.
+            with (mpl.rc_context({'savefig.bbox': 'standard'}),
+                  _digest._quiet_pdf_metadata(), _digest._keep_layout(fig)):
+                fig.savefig(out, metadata=meta)
             written.append(out)
     finally:
         fig.set_size_inches(w0, h0)
         fig.canvas.draw()
     if retouch:
-        pkl = path.with_suffix('.pkl')
+        pkl = path.with_name(path.name + '.pkl')
+        # Read back by `load`, which reopens the figure only under the
+        # version that wrote it (see there).
+        fig._figtools_version = __version__
         with open(pkl, 'wb') as f:
             pickle.dump(fig, f)
         written.append(pkl)
-    return written
+    return _Drawn(written)
 
 
 def load(path):
@@ -1998,12 +2439,42 @@ def load(path):
     The figure comes back live: the deferred label placement travels in the
     pickle, so edits re-solve on the next draw and `save` works on it
     again.
+
+    The pickle holds figtools' private state as the version that wrote it
+    lays it out, so it reopens only under that version: `save` stamps the
+    pickle with its version, and `load` raises ValueError for a pickle
+    stamped with another or with none, or that refers to code this version
+    lacks. Rerun the code that drew the figure to get one this version
+    reads. Unpickling a file runs code from it: load only files you wrote.
     """
     with open(path, 'rb') as f:
-        fig = pickle.load(f)
+        try:
+            fig = pickle.load(f)
+        except (AttributeError, ImportError) as e:
+            # Another version's pickle can name a private function or class
+            # this version does not have, and fails before its stamp is read.
+            raise ValueError(f'load: {path} refers to code that figtools '
+                             f'{__version__} lacks ({e}), so another version '
+                             f'pickled it; rerun the code that drew the '
+                             f'figure and save it again with retouch=True'
+                             ) from e
+    if not isinstance(fig, mpl.figure.Figure):
+        raise TypeError(f'load: {path} holds a {type(fig).__name__}, not a '
+                         f'figure pickled by save(..., retouch=True)')
+    # Another version's state can load without error and still be wrong:
+    # one that keeps its placement under another attribute name comes back
+    # with its labels disconnected from the draw, and nothing says so.
+    found = getattr(fig, '_figtools_version', None)
+    if found != __version__:
+        wrote = ('carries no figtools version (figtools before 0.8.0 '
+                 'recorded none)' if found is None
+                 else f'was pickled by figtools {found}')
+        raise ValueError(f'load: {path} {wrote}, and this is figtools '
+                         f'{__version__}; rerun the code that drew the '
+                         f'figure and save it again with retouch=True')
     # Pickling drops the canvas, and the draw hook that re-runs placement
     # was registered on it; reconnect, or the reopened figure's labels
     # would go stale on the first resize.
-    if getattr(fig, '_fs_jobs', None):
+    if getattr(fig, '_figtools_jobs', None):
         fig.canvas.mpl_connect('draw_event', _on_draw)
     return fig

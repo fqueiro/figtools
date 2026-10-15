@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import matplotlib
 import numpy as np
@@ -181,6 +182,23 @@ def test_key_entries_name_unlabelled_series_by_colour():
     assert all(s['named_by'] == 'key' for s in p['series'])
 
 
+def test_a_panel_letter_names_no_series():
+    """Only a key names a series by colour. A panel letter in the colour of
+    an unlabelled line, written as an annotation, as text or as anchored
+    text, is a note and leaves the line unnamed."""
+    from matplotlib.offsetbox import AnchoredText
+    fig, (a, b, c) = plt.subplots(1, 3)
+    for ax in (a, b, c):
+        ax.plot([1, 2], [1, 2], color='black')
+    a.annotate('(a)', xy=(0.02, 0.95), xycoords='axes fraction', color='black')
+    b.text(0.02, 0.95, '(b)', transform=b.transAxes, color='black')
+    c.add_artist(AnchoredText('(c)', loc='upper left', prop={'color': 'black'}))
+    for p, letter in zip(digest.describe(fig)['panels'], 'abc', strict=True):
+        s = p['series'][0]
+        assert (s['label'], s.get('named_by')) == (None, None), letter
+        assert p['notes'] == [{'text': f'({letter})', 'color': '#000000'}]
+
+
 def test_text_inside_offset_boxes_is_read_line_by_line():
     """A key whose words differ in colour is packed from offset boxes, since
     `key` colours whole lines. Each of its lines is a note, and a line in
@@ -263,14 +281,17 @@ def test_small_image_grids_are_digested_in_full_and_large_ones_flagged():
     assert 'values' not in d['panels'][1]['images'][0] and d['panels'][1]['incomplete']
 
 
-def test_log_scales_and_guides_are_marked():
+def test_log_scales_and_reference_curves_are_marked():
     fig, ax = plt.subplots()
     ax.plot([1, 10, 100], [1, 2, 3], label='s')
     ax.set_xscale('log')
-    ft.guide(ax, [1, 100], [1, 3])
-    p = panel(fig)
+    ft.refcurve(ax, [1, 100], [1, 3])
+    d = digest.describe(fig)
+    p = d['panels'][0]
     assert p['xscale'] == 'log'
-    assert [s.get('role') for s in p['series']] == [None, 'guide']
+    assert [s.get('role') for s in p['series']] == [None, 'guide']   # the JSON keeps its value
+    text = '\n'.join(digest.markdown(d, 'fig-r'))
+    assert '(line, reference curve):' in text and ', guide' not in text
 
 
 def test_long_series_are_thinned_and_say_so():
@@ -384,24 +405,28 @@ def test_extract_pdf_writes_the_figures_beside_the_page_digest(tmp_path):
 
 def test_setup_arms_the_notebook_formatters_once():
     # In its own interpreter: enabling the inline backend is process-wide.
-    # Formats are selected before setup, as a Quarto render does.
+    # Formats are selected before setup, as a Quarto render does, and the
+    # shell stands in for a kernel's, which carries the kernel it serves.
     code = textwrap.dedent('''
         import base64, json
         import matplotlib
         matplotlib.use('module://matplotlib_inline.backend_inline')
         from IPython.core.interactiveshell import InteractiveShell
         ip = InteractiveShell.instance()
+        ip.kernel = object()
         from matplotlib_inline.backend_inline import set_matplotlib_formats
         set_matplotlib_formats('png', 'pdf')
         import matplotlib.pyplot as plt
         from matplotlib.figure import Figure
         import figtools as ft
         from figtools import digest
-        ft.setup()
         fmts = ip.display_formatter.formatters
+        plain = [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')]
+        ft.setup()
         first = fmts['image/png'].lookup_by_type(Figure)
         assert getattr(first, '_figtools_digest', False)
         assert getattr(fmts['application/pdf'].lookup_by_type(Figure), '_figtools_digest', False)
+        assert digest.installed()
         ft.setup()
         assert fmts['image/png'].lookup_by_type(Figure) is first
         fig, ax = plt.subplots()
@@ -409,11 +434,86 @@ def test_setup_arms_the_notebook_formatters_once():
         d = digest.from_png(base64.b64decode(first(fig)))
         pdf = fmts['application/pdf'].lookup_by_type(Figure)(fig)
         assert digest.from_pdf(base64.b64decode(pdf)) == d
+        assert digest.uninstall() and not digest.installed()
+        assert [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')] == plain
+        assert digest.from_png(base64.b64decode(fmts['image/png'].lookup_by_type(Figure)(fig))) is None
         print(json.dumps(d['panels'][0]['series'][0]['label']))
         ''')
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().splitlines()[-1] == '"s"'
+
+
+def fake_shell(kernel=True):
+    """An IPython shell with real PNG and PDF formatter registries, a kernel
+    or none, and an `enable_matplotlib` that records its calls."""
+    from functools import partial
+    from types import SimpleNamespace
+
+    from IPython.core.formatters import PDFFormatter, PNGFormatter
+    from matplotlib.figure import Figure
+
+    # The shape the inline backend registers: print_figure with keywords.
+    png = partial(print_figure, fmt='png', base64=False)
+    pdf = partial(print_figure, fmt='pdf', base64=False)
+    fmts = {'image/png': PNGFormatter(), 'application/pdf': PDFFormatter()}
+    fmts['image/png'].for_type(Figure, png)
+    fmts['application/pdf'].for_type(Figure, pdf)
+    calls = []
+    ip = SimpleNamespace(display_formatter=SimpleNamespace(formatters=fmts),
+                         enable_matplotlib=calls.append)
+    if kernel:
+        ip.kernel = object()
+    return ip, calls, (png, pdf)
+
+
+def pending_backend(monkeypatch, ip):
+    """The state of a fresh shell: no backend chosen yet, and `ip` running."""
+    import IPython.core.getipython
+    monkeypatch.setattr(IPython.core.getipython, 'get_ipython', lambda: ip)
+    monkeypatch.setattr(matplotlib, 'get_backend', lambda *a, **k: None)
+
+
+def test_install_leaves_a_shell_without_a_kernel_alone(monkeypatch):
+    """Terminal IPython has no kernel and no backend chosen yet; arming the
+    digest there would switch it to the inline backend, and `plt.show()`
+    would open no window."""
+    from matplotlib.figure import Figure
+    ip, calls, plain = fake_shell(kernel=False)
+    pending_backend(monkeypatch, ip)
+    assert digest.install() is False
+    assert calls == [] and not digest.installed()
+    fmts = ip.display_formatter.formatters
+    assert [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')] == list(plain)
+
+
+def test_uninstall_puts_back_what_install_wrapped(monkeypatch):
+    import matplotlib_inline.backend_inline as inline
+    from matplotlib.figure import Figure
+    ip, calls, (png, pdf) = fake_shell()
+    pending_backend(monkeypatch, ip)
+    # The inline backend's configuration has run, as it has in a notebook.
+    monkeypatch.setattr(inline.configure_inline_support, 'current_backend', 'inline', raising=False)
+    fmts = ip.display_formatter.formatters
+    assert not digest.installed() and digest.uninstall() is False
+    assert digest.install() is True and calls == []
+    assert digest.installed()
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [3, 4], label='s')
+    assert digest.from_png(fmts['image/png'].lookup_by_type(Figure)(fig)) is not None
+    assert digest.uninstall() is True
+    assert fmts['image/png'].lookup_by_type(Figure) is png
+    assert fmts['application/pdf'].lookup_by_type(Figure) is pdf
+    assert not digest.installed() and digest.uninstall() is False
+    # with only one of the two wrapped, the digest is still armed
+    digest._wrap_formatter(fmts['application/pdf'], 'pdf')
+    assert digest.installed()
+
+
+def test_installed_and_uninstall_are_safe_outside_ipython(monkeypatch):
+    import IPython.core.getipython
+    monkeypatch.setattr(IPython.core.getipython, 'get_ipython', lambda: None)
+    assert digest.installed() is False and digest.uninstall() is False and digest.install() is False
 
 
 def test_markdown_merges_series_on_a_shared_x_and_thins_large_tables():
@@ -486,6 +586,48 @@ def test_extract_writes_digests_tables_and_text_from_a_rendered_page(tmp_path):
     manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['sha256'] == hashlib.sha256(src.read_bytes()).hexdigest()
     assert [f['digest'] for f in manifest['figures']] == [True, False]
+
+
+LINKED = '''
+<html><body><main class="content">
+<div id="fig-linked" class="cell quarto-float quarto-figure"><figure class="quarto-float-fig figure">
+<div class="cell-output cell-output-display"><img src="my%20doc_files/figure-html/fig-linked-output-1.png" class="figure-img"></div>
+<figcaption class="quarto-float-caption">Figure&nbsp;1: Linked.</figcaption></figure></div>
+<div class="cell"><div class="cell-output cell-output-display"><img src="my%20doc_files/figure-html/gone.png"></div></div>
+<div class="cell"><div class="cell-output cell-output-display"><img src="https://example.org/fig.png"></div></div>
+</main></body></html>
+'''
+
+
+def test_extract_reads_images_linked_beside_the_page(tmp_path):
+    """Unless a page embeds its resources, Quarto links each figure's file,
+    written to `<document>_files/figure-html/` beside the page, inside the
+    output folder when there is one."""
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3], [2, 4, 6], label='double')
+    png = print_figure(fig, fmt='png', base64=False,
+                       metadata={digest.KEY: digest.encode(digest.describe(fig))})
+    site = tmp_path / '_site'
+    figures = site / 'my doc_files' / 'figure-html'
+    figures.mkdir(parents=True)
+    (figures / 'fig-linked-output-1.png').write_bytes(png)
+    src = tmp_path / 'my doc.qmd'
+    src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    html = site / 'my doc.html'
+    html.write_text(LINKED, encoding='utf-8')
+    out = tmp_path / 'cache' / 'proj' / 'my doc'
+    summary, _ = digest.extract(html, out, source=src, root=tmp_path)
+    assert summary == '3 figures, 0 tables, 0 text blocks'
+    text = (out / 'outputs.md').read_text(encoding='utf-8')
+    assert '### fig-linked. Figure 1: Linked.' in text and '| x | double |' in text
+    assert (out / 'fig-linked.png').read_bytes() == png and (out / 'fig-linked.csv').exists()
+    gone = figures.resolve() / 'gone.png'
+    assert f'### fig-2\n\nImage file {gone} not found; nothing digested.' in text
+    assert ('### fig-3\n\nImage linked by the absolute address https://example.org/fig.png, '
+            'which is not fetched; nothing digested.') in text
+    manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert manifest['figures'] == [{'label': 'fig-linked', 'digest': True,
+                                    'files': ['fig-linked.png', 'fig-linked.csv']}]
 
 
 def test_extract_refuses_to_clear_a_folder_it_did_not_write(tmp_path):
@@ -571,11 +713,217 @@ def test_post_render_fails_on_a_figure_that_lost_its_caption(tmp_path,
     html = tmp_path / 'doc.html'
     html.write_text(_page(['<pre><code>[Text(0, 0, \'a\')]</code></pre>',
                            IMG]), encoding='utf-8')
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv('QUARTO_PROJECT_OUTPUT_FILES', 'doc.html')
+    quarto_env(monkeypatch, tmp_path, None, ['doc.html'])
     with pytest.raises(SystemExit) as e:
         digest.post_render(cache=tmp_path / 'cache')
-    assert 'fig-x' in str(e.value) and 'plt.show()' in str(e.value)
+    assert 'fig-x' in str(e.value) and str(e.value).endswith('plt.show().')
+    # the advice names the second outputs that still occur
+    assert 'ft.key' not in digest.SPLIT_ADVICE and 'ft.dotplot' not in digest.SPLIT_ADVICE
     # the page is digested before the failure, so the evidence is on disk
     out = digest.digest_dir(tmp_path, src, tmp_path / 'cache')
     assert json.loads((out / 'manifest.json').read_text())['split'] == ['fig-x']
+
+
+def quarto_env(monkeypatch, project, output_dir, files):
+    """What Quarto hands a post-render script, run from the project folder:
+    the outputs relative to the project, in the platform's separators."""
+    monkeypatch.chdir(project)
+    monkeypatch.setenv('QUARTO_PROJECT_DIR', str(project))
+    monkeypatch.setenv('QUARTO_PROJECT_OUTPUT_DIR', str(project / output_dir) if output_dir
+                       else str(project))
+    monkeypatch.setenv('QUARTO_PROJECT_OUTPUT_FILES', '\n'.join(
+        str(Path(output_dir, f) if output_dir else Path(f)) for f in files))
+
+
+@pytest.mark.parametrize('output_dir', [None, '_out'])
+def test_post_render_finds_each_source_through_the_output_folder(tmp_path, monkeypatch,
+                                                                 output_dir):
+    """With `output-dir` (and in every website and book) Quarto writes
+    `_out/sub/other.html` for `sub/other.py`; without one the page sits
+    beside its source."""
+    (tmp_path / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    (tmp_path / 'doc.qmd').write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    (tmp_path / 'sub').mkdir()
+    (tmp_path / 'sub' / 'other.py').write_text('# %%\n', encoding='utf-8')
+    site = tmp_path / output_dir if output_dir else tmp_path
+    (site / 'sub').mkdir(parents=True, exist_ok=True)
+    (site / 'doc.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    (site / 'sub' / 'other.html').write_text('<main><h2>O</h2></main>', encoding='utf-8')
+    two_figure_pdf(site)   # doc.pdf, the same document rendered to PDF
+    (site / 'search.json').write_text('{}', encoding='utf-8')
+    quarto_env(monkeypatch, tmp_path, output_dir,
+               ['doc.html', 'doc.pdf', str(Path('sub') / 'other.html'), 'search.json'])
+    cache = tmp_path / 'cache'
+    monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', str(cache))   # read when post_render runs
+    digest.post_render()
+    base = cache / tmp_path.name
+    doc = json.loads((base / 'doc' / 'manifest.json').read_text(encoding='utf-8'))
+    other = json.loads((base / 'sub' / 'other' / 'manifest.json').read_text(encoding='utf-8'))
+    assert (doc['source'], other['source']) == ('doc.qmd', 'sub/other.py')
+    assert doc['project_root'] == other['project_root'] == str(tmp_path.resolve())
+    pdf = json.loads((base / 'doc' / 'pdf' / 'manifest.json').read_text(encoding='utf-8'))
+    assert (pdf['source'], pdf['counts']) == ('doc.qmd', {'figures': 2})
+    assert not (base / 'search').exists()
+
+
+def test_post_render_skips_pages_and_pdfs_no_document_made(tmp_path, monkeypatch, capsys):
+    """A website's about.md runs no figtools code, and a book rendered to PDF
+    writes one file for all its chapters, under the book's title. Each is
+    skipped with a line saying why, and the render's other pages are
+    digested; a page with no source at all still fails it (below)."""
+    (tmp_path / '_quarto.yml').write_text('project:\n  type: website\n', encoding='utf-8')
+    (tmp_path / 'doc.qmd').write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    (tmp_path / 'about.md').write_text('# About\n', encoding='utf-8')
+    site = tmp_path / '_site'
+    site.mkdir()
+    for name in ('doc', 'about'):
+        (site / f'{name}.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    two_figure_pdf(site).rename(site / 'My-Book.pdf')
+    two_figure_pdf(site).rename(site / 'about.pdf')
+    quarto_env(monkeypatch, tmp_path, '_site', ['doc.html', 'about.html', 'My-Book.pdf',
+                                                'about.pdf'])
+    cache = tmp_path / 'cache'
+    digest.post_render(cache=cache)
+    out = capsys.readouterr().out.splitlines()
+    page, book, pdf = (Path('_site', f) for f in ('about.html', 'My-Book.pdf', 'about.pdf'))
+    assert f'digest: skipped {page}: its source about.md runs no figtools code' in out
+    assert (f"digest: skipped {book}: no single document made it, as with a book's PDF; "
+            f'render-digest figure {book} prints the digests it carries') in out
+    assert (f'digest: skipped {pdf}: its source about.md runs no figtools code; '
+            f'render-digest figure {pdf} prints the digests it carries') in out
+    assert [p.name for p in (cache / tmp_path.name).iterdir()] == ['doc']
+
+
+def test_post_render_names_an_output_without_one_source(tmp_path, monkeypatch):
+    (tmp_path / 'doc.qmd').write_text('x', encoding='utf-8')
+    (tmp_path / 'doc.py').write_text('x', encoding='utf-8')
+    (tmp_path / '_out').mkdir()
+    for name in ('doc', 'lost'):
+        (tmp_path / '_out' / f'{name}.html').write_text('<main></main>', encoding='utf-8')
+    quarto_env(monkeypatch, tmp_path, '_out', ['lost.html'])
+    with pytest.raises(FileNotFoundError, match=r'lost.*found none'):
+        digest.post_render(cache=tmp_path / 'cache')
+    quarto_env(monkeypatch, tmp_path, '_out', ['doc.html'])
+    with pytest.raises(FileNotFoundError, match=r'found doc\.py, doc\.qmd'):
+        digest.post_render(cache=tmp_path / 'cache')
+    monkeypatch.delenv('QUARTO_PROJECT_OUTPUT_DIR')
+    with pytest.raises(SystemExit, match='QUARTO_PROJECT_OUTPUT_DIR'):
+        digest.post_render(cache=tmp_path / 'cache')
+    with pytest.raises(ValueError, match='together'):
+        digest.source_for(tmp_path / '_out' / 'doc.html', tmp_path / '_out')
+
+
+def test_the_cache_root_follows_the_environment_at_call_time(tmp_path, monkeypatch):
+    src = tmp_path / 'proj' / 'code' / 'doc.qmd'
+    monkeypatch.delenv('FIGTOOLS_DIGEST_DIR', raising=False)
+    assert digest.digest_dir(tmp_path / 'proj', src) == digest.CACHE_ROOT / 'proj' / 'code' / 'doc'
+    monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', str(tmp_path / 'digests'))
+    assert digest.digest_dir(tmp_path / 'proj', src) == tmp_path / 'digests' / 'proj' / 'code' / 'doc'
+    for bad in ('', 'relative/digests'):
+        monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', bad)
+        with pytest.raises(ValueError, match='FIGTOOLS_DIGEST_DIR must name an absolute'):
+            digest.digest_dir(tmp_path / 'proj', src)
+
+
+def test_projects_sharing_a_folder_name_do_not_overwrite_each_other(tmp_path, capsys):
+    cache = tmp_path / 'cache'
+    docs = []
+    for parent in ('a', 'b'):
+        root = tmp_path / parent / 'proj'
+        root.mkdir(parents=True)
+        (root / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+        src = root / 'doc.qmd'
+        src.write_text(f'---\ntitle: {parent}\n---\n', encoding='utf-8')
+        src.with_suffix('.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
+        docs.append((root, src))
+    (ra, sa), (rb, sb) = docs
+    out = digest.digest_dir(ra, sa, cache)
+    assert out == digest.digest_dir(rb, sb, cache)   # the clash: one folder for both
+    digest.extract(sa.with_suffix('.html'), out, source=sa, root=ra)
+    assert json.loads((out / 'manifest.json').read_text())['project_root'] == str(ra.resolve())
+    with pytest.raises(FileExistsError) as e:
+        digest.extract(sb.with_suffix('.html'), out, source=sb, root=rb)
+    assert str(ra.resolve()) in str(e.value) and str(rb.resolve()) in str(e.value)
+    assert 'FIGTOOLS_DIGEST_DIR' in str(e.value)
+    assert digest.check(sa, cache=cache) == 0
+    assert digest.check(sb, cache=cache) == 2   # a's digest is not b's
+    assert 'shares this project' in capsys.readouterr().out
+    digest.extract(sa.with_suffix('.html'), out, source=sa, root=ra)   # its own folder clears
+
+
+def quarto_project(root, title):
+    """A Quarto project at `root` holding doc.qmd and its rendered page."""
+    root.mkdir(parents=True)
+    (root / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    src = root / 'doc.qmd'
+    src.write_text(f'---\ntitle: {title}\n---\n', encoding='utf-8')
+    src.with_suffix('.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    return src
+
+
+def test_the_digest_of_a_project_that_moved_is_its_own(tmp_path):
+    """A project moved to another parent folder keeps its folder name, so its
+    digest stays where it was, recording the old path. Nothing is left
+    there to protect: the document reads as fresh and re-renders."""
+    cache = tmp_path / 'cache'
+    sa = quarto_project(tmp_path / 'a' / 'proj', 'T')
+    out = digest.digest_dir(sa.parent, sa, cache)
+    digest.extract(sa.with_suffix('.html'), out, source=sa, root=sa.parent)
+    (tmp_path / 'b').mkdir()
+    moved = (tmp_path / 'a' / 'proj').rename(tmp_path / 'b' / 'proj')
+    src = moved / 'doc.qmd'
+    assert digest.digest_dir(moved, src, cache) == out
+    assert digest.check(src, cache=cache) == 0
+    digest.extract(src.with_suffix('.html'), out, source=src, root=moved)
+    assert json.loads((out / 'manifest.json').read_text())['project_root'] == str(moved.resolve())
+
+
+def test_the_digest_of_a_deleted_project_gives_way_to_its_namesake(tmp_path):
+    """While another project of the same folder name exists, its digest is
+    not this one's; once its folder holds no _quarto.yml, the digest is
+    stale and the next render replaces it."""
+    cache = tmp_path / 'cache'
+    sa = quarto_project(tmp_path / 'a' / 'proj', 'a')
+    sb = quarto_project(tmp_path / 'b' / 'proj', 'b')
+    ra, rb = sa.parent, sb.parent
+    out = digest.digest_dir(ra, sa, cache)
+    digest.extract(sa.with_suffix('.html'), out, source=sa, root=ra)
+    assert digest.check(sb, cache=cache) == 2
+    with pytest.raises(FileExistsError):
+        digest.extract(sb.with_suffix('.html'), out, source=sb, root=rb)
+    (ra / '_quarto.yml').unlink()
+    assert digest.check(sb, cache=cache) == 1   # a's digest, read as b's stale one
+    digest.extract(sb.with_suffix('.html'), out, source=sb, root=rb)
+    assert json.loads((out / 'manifest.json').read_text())['project_root'] == str(rb.resolve())
+    assert digest.check(sb, cache=cache) == 0
+
+
+def test_commands_on_a_document_outside_any_project_exit_2(tmp_path, capsys):
+    """Outside a Quarto project there is no digest, which is check's 2; the
+    exit code of a traceback, 1, would read as a changed source to a gate."""
+    src = tmp_path / 'doc.qmd'
+    src.write_text('x', encoding='utf-8')
+    html = src.with_suffix('.html')
+    html.write_text('<main></main>', encoding='utf-8')
+    for argv in (['check', str(src)], ['where', str(src)], ['extract', str(html)]):
+        assert digest.main(argv) == 2, argv
+        err = capsys.readouterr().err
+        assert err.startswith(f'render-digest {argv[0]}: ') and 'no _quarto.yml' in err
+        assert err.count('\n') == 1
+
+
+def test_commands_with_an_unusable_cache_folder_exit_2(tmp_path, capsys, monkeypatch):
+    """A relative or empty FIGTOOLS_DIGEST_DIR leaves no digest to read,
+    which is check's 2 as well, not a traceback's 1."""
+    root = tmp_path / 'proj'
+    root.mkdir()
+    (root / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    src = root / 'doc.qmd'
+    src.write_text('x', encoding='utf-8')
+    for value in ('rel/dir', ''):
+        monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', value)
+        for argv in (['check', str(src)], ['where', str(src)]):
+            assert digest.main(argv) == 2, (value, argv)
+            err = capsys.readouterr().err
+            assert err.startswith(f'render-digest {argv[0]}: ')
+            assert 'FIGTOOLS_DIGEST_DIR' in err and err.count('\n') == 1

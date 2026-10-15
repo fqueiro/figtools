@@ -11,6 +11,10 @@ under test and as the check on the placement: the two are tested against each
 other, since a detector that never fires would pass a chart full of overlaps.
 """
 
+import importlib.metadata
+import pickle
+import re
+import warnings
 from itertools import pairwise
 
 import matplotlib
@@ -19,9 +23,10 @@ import pytest
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from IPython.core.formatters import DisplayFormatter
 
 import figtools as ft
-from figtools import _spread
+from figtools import _spread, digest
 
 LO, HI = 0.02, 0.98
 
@@ -59,10 +64,10 @@ def test_spread_separates_coincident_labels():
 
 
 def test_spread_leaves_a_label_with_clear_space_on_its_anchor():
-    """Spreading a crowded cluster must not drag distant labels along: the
-    old push-then-re-centre shifted the whole block, moving labels whose own
-    space was never contested (doc 12: Denmark's label pulled off its line
-    because four other series ended in a cluster far below it)."""
+    """Spreading a crowded cluster must not drag distant labels along.
+    Pushing collisions apart and re-centring the whole block would move
+    labels whose own space is not contested: here the top label would leave
+    its line because four other series end in a cluster far below it."""
     ys = [0.62, 0.47, 0.40, 0.32, 0.31, 0.30]
     out = _spread(ys, 0.052, lo=LO, hi=HI)
     assert out[0] == pytest.approx(0.62)   # isolated at the top: untouched
@@ -75,7 +80,8 @@ def _labels(ax):
 
 
 def test_label_lines_labels_every_series():
-    """The doc-01 aggregation figure: four series ending within a hair."""
+    """Four series over seventy years, ending within a hair of one another,
+    each get their label."""
     ft.setup()
     fig, ax = plt.subplots()
     x = np.arange(1954, 2024)
@@ -105,10 +111,10 @@ def test_label_lines_puts_an_early_ending_series_at_its_own_end():
 
 
 def test_label_lines_ends_the_panel_at_the_data_and_hangs_labels_beyond_it():
-    """The axis used to be stretched to hold the labels, so every gridline
-    ran on under them. The panel now ends a hair past the last point, the
-    labels sit in the figure margin, and the layout engine keeps them inside
-    the figure."""
+    """The panel ends a hair past the last point, so the gridlines stop with
+    the data; the labels sit in the figure margin, and the layout engine
+    keeps them inside the figure. Stretching the axis to hold the labels
+    would run every gridline on under them."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(5.9, 3.4))
     x = np.arange(1954, 2024)
@@ -132,12 +138,11 @@ def test_label_lines_ends_the_panel_at_the_data_and_hangs_labels_beyond_it():
 
 def test_label_lines_keeps_margin_labels_in_the_order_of_the_line_ends():
     """The ladder is the pairing: the label whose line ends higher must sit
-    higher, or the reader pairs every label with the wrong line. This is the
-    doc-12 four-panel figure reduced to its geometry (series ending in tight
-    clusters, small type, one shared x-axis), which used to come out with
-    swapped labels: a label brushing the tail of a neighbouring line was
-    kicked into the dodge search, and the search could settle on the far
-    side of a neighbour."""
+    higher, or the reader pairs every label with the wrong line. Four panels
+    of country series on a log scale, ending in tight clusters, in small
+    type, with one shared x-axis: a label brushing the tail of a
+    neighbouring line goes into the dodge search, which must not settle on
+    the far side of a neighbour."""
     ft.setup(base=9)
     fig, axes = plt.subplots(2, 2, figsize=(9, 7), sharex=True, sharey=True)
     x = np.arange(1995, 2022)
@@ -190,8 +195,8 @@ def test_leaders_appear_only_when_a_label_is_clearly_off_its_line():
     """A stub leader on a label still level with its line end is noise (the
     word's colour and the ladder's order carry the pairing); a label pushed
     well off, like the outer labels of a fan over coincident ends, earns
-    one. The old fixed 2%-of-panel threshold was well under a label height
-    and sprouted stubs all over a spread cluster."""
+    one. A threshold under a label height would sprout stubs all over a
+    spread cluster."""
     ft.setup()
     fig, ax = plt.subplots()
     x = np.arange(2000, 2021)
@@ -201,9 +206,10 @@ def test_leaders_appear_only_when_a_label_is_clearly_off_its_line():
     for name, e in [('a', 0.604), ('b', 0.592), ('c', 0.587)]:
         ax.plot(x, 0.5 + (e - 0.5) * t, label=name)
     # Five series ending together: the outer labels of the fan land well
-    # over 1.5 label heights from the shared end and get leaders.
+    # over 1.5 label heights from the shared end and get leaders. Dashed,
+    # so the eighth series, back at the first colour, differs from 'a'.
     for name in ['v', 'w', 'x', 'y', 'z']:
-        ax.plot(x, np.full(x.shape, 0.15), label=name)
+        ax.plot(x, np.full(x.shape, 0.15), ls='--', label=name)
     ax.set_xlim(2000, 2020)
     ax.set_ylim(0, 1)
     ft.label_lines(ax)
@@ -273,11 +279,11 @@ def test_label_lines_wraps_a_wide_label_per_output_size():
     ax.plot(x, np.linspace(0, 0.5, len(x)), label='Défice')
     ft.label_lines(ax)
     fig.canvas.draw()
-    shown = {t._fs_text: t.get_text() for t in ax.texts}
+    shown = {t._figtools_text: t.get_text() for t in ax.texts}
     assert shown['Potencial a longo prazo'] == 'Potencial a longo prazo'
     fig.set_size_inches(4.5, 2.4)
     fig.canvas.draw()
-    shown = {t._fs_text: t.get_text() for t in ax.texts}
+    shown = {t._figtools_text: t.get_text() for t in ax.texts}
     assert shown['Potencial a longo prazo'] == 'Potencial a\nlongo prazo'
     assert shown['Défice'] == 'Défice'
     assert ft.collisions(fig) == []
@@ -313,7 +319,7 @@ def test_label_lines_wrap_none_keeps_a_wide_label_on_one_line():
 def test_label_lines_lets_a_shared_y_range_grow_for_a_later_panel():
     """Two sharey panels labelled inside the loop that draws them, the
     second reaching higher than the first. Freezing the y-range at the
-    first call used to make the second an error; placement re-solves from
+    first call would make the second an error; placement re-solves from
     the data anchors at every draw, so the range can stay free."""
     ft.setup()
     fig, axes = plt.subplots(1, 2, sharey=True)
@@ -337,11 +343,105 @@ def test_label_lines_rejects_an_axes_with_nothing_labelled():
     plt.close(fig)
 
 
+def test_label_lines_refuses_a_second_call_on_one_axes():
+    """Called again, it would name every line a second time, the new labels
+    dodging the old, and `collisions` would pass the figure."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], label='a')
+    first = ft.label_lines(ax)
+    ax.plot([0, 1], [1, 0], label='b')
+    with pytest.raises(ValueError, match='already labelled; call label_lines '
+                                         'once per axes'):
+        ft.label_lines(ax)
+    assert ax.texts[:] == first
+    plt.close(fig)
+
+
+def _panel_right_and_label_lefts(fig, ax, anns):
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    return (ax.get_window_extent(r).x1,
+            [matplotlib.text.Text.get_window_extent(a, r).x0 for a in anns])
+
+
+@pytest.mark.parametrize('limits', ['autoscaled', 'by hand'])
+def test_label_lines_on_an_inverted_axis_labels_the_end_drawn_rightmost(limits):
+    """On an axis running right to left (years before present, ages counted
+    down) the end of each series on the right of the panel is its first
+    point: the labels hang there, in the margin, and while the axis
+    autoscales the right-hand limit as drawn ends a hair past it."""
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    x = np.arange(2000, 2021)
+    ax.plot(x, np.linspace(1.0, 2.0, 21), label='rises')
+    ax.plot(x, np.linspace(1.5, 0.5, 21), label='falls')
+    if limits == 'autoscaled':
+        ax.invert_xaxis()
+    else:
+        ax.set_xlim(2020, 2000)
+    anns = ft.label_lines(ax)
+    assert [a.xy for a in anns] == [(2000, 1.0), (2000, 1.5)]
+    left, right = ax.get_xlim()
+    if limits == 'autoscaled':
+        assert left > 2020 and 2000 - 0.02 * 20 < right < 2000
+    else:
+        assert (left, right) == (2020, 2000)
+    panel_right, lefts = _panel_right_and_label_lefts(fig, ax, anns)
+    assert all(x0 >= panel_right for x0 in lefts)
+    assert ft.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_label_lines_labels_a_series_stored_right_to_left_at_its_right_end():
+    """Rows sorted newest first put the last point on the left of the
+    panel; the label still goes to the right-hand end, and the panel still
+    holds the whole line."""
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    ax.plot(np.arange(2020, 1999, -1), np.linspace(2.0, 1.0, 21),
+            label='newest first')
+    ax.plot(np.arange(2000, 2021), np.linspace(0.0, 1.0, 21),
+            label='oldest first')
+    anns = ft.label_lines(ax)
+    assert [a.xy for a in anns] == [(2020, 2.0), (2020, 1.0)]
+    assert 2020 < ax.get_xlim()[1] < 2020 + 0.02 * 20
+    assert ft.collisions(fig) == []
+    plt.close(fig)
+
+
+def test_label_lines_keeps_its_gap_and_end_pad_on_a_log_axis():
+    """The gap before a label and the pad past the last point are shares of
+    the panel on screen. Worked out in data units, they shrink on a log
+    axis to a sliver at its upper end and the label touches its line. Data
+    spread evenly in logs on a log axis, and their logs on a linear one,
+    come out with one gap and one pad, measured in pixels."""
+    ft.setup()
+    measured = {}
+    for scale in ('linear', 'log'):
+        fig, ax = plt.subplots(figsize=(5.9, 3.4))
+        t = np.linspace(0, 2, 30)
+        x = t if scale == 'linear' else 10 ** t
+        ax.plot(x, np.linspace(0, 1, 30), label='a')
+        ax.plot(x, np.linspace(1, 0, 30), label='b')
+        ax.set_xscale(scale)
+        anns = ft.label_lines(ax)
+        panel_right, (label_left, _) = _panel_right_and_label_lefts(fig, ax, anns)
+        width = ax.get_window_extent().width
+        end = ax.transData.transform(anns[0].xy)[0]
+        measured[scale] = ((label_left - end) / width,
+                           (panel_right - end) / width)
+        assert ft.collisions(fig) == []
+        plt.close(fig)
+    assert measured['linear'][0] == pytest.approx(ft._LABEL_GAP, abs=1e-4)
+    assert measured['log'] == pytest.approx(measured['linear'], abs=1e-4)
+
+
 def _short_and_long(ax):
     """A long series plus one stopping early, whose ends sit close together.
 
-    The doc-10 shape: the short series' label is placed mid-panel, where the
-    long series' path runs straight through it.
+    The short series' label is placed mid-panel, where the long series'
+    path runs straight through it.
     """
     yr = np.arange(1985, 2024)
     ax.plot(yr, 1.0 + 0.010 * (yr - 1985), label='Portugal')
@@ -387,8 +487,8 @@ def test_band_and_reference_labels_end_up_clear_of_the_data():
 
 
 def test_refline_label_at_the_top_of_the_data_takes_its_headroom():
-    """A named rule above a deficit (parity at 1, data below) left its label
-    hovering above the panel's edge, on nothing it names. The panel now
+    """A named rule above a deficit (parity at 1, data below) would leave its
+    label hovering above the panel's edge, on nothing it names; the panel
     grows by the measured overshoot so the label sits inside it."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(5.9, 3.4))
@@ -408,7 +508,8 @@ def test_refline_label_at_the_top_of_the_data_takes_its_headroom():
 
 def test_refline_keeps_a_top_set_by_hand_and_names_the_rule_below_it():
     """A common scale across figures is a limit set by hand; raising it to
-    fit a label broke one silently. The label goes below the rule instead."""
+    fit a label would break it silently. The label goes below the rule
+    instead."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(5.9, 3.4))
     x = np.arange(1995, 2024)
@@ -451,8 +552,8 @@ def test_a_vertical_rule_label_at_the_right_edge_goes_left_of_its_rule():
 @pytest.mark.parametrize('by_hand', [False, True])
 def test_headroom_grows_an_autoscaled_top_and_keeps_one_set_by_hand(by_hand):
     """Where the data fill the whole rule, the label needs room at the top:
-    made while the axis autoscales, as before; never over a limit set by
-    hand, where the label stays on the data for the check to report."""
+    made while the axis autoscales; never over a limit set by hand, where
+    the label stays on the data for the check to report."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(4.1, 2.6))
     x = np.linspace(0, 10, 2000)
@@ -486,9 +587,10 @@ def test_label_lines_keeps_a_shared_limit_set_by_hand_between_panels():
 
 @pytest.mark.parametrize('build', ['subplots', 'add_axes'])
 def test_save_keeps_an_axes_box_placed_by_hand(tmp_path, build):
-    """Saving switches the layout engine off and restores it, and matplotlib
+    """Saving switches the layout engine off and restores it. Matplotlib
     restores "none" as the default `setup()` sets, constrained layout, which
-    re-laid out a box placed by hand before the slide variant was written."""
+    would re-lay out a box placed by hand before the slide variant is
+    written."""
     ft.setup()
     if build == 'subplots':
         fig, ax = plt.subplots(figsize=(5.9, 2.2), layout='none')
@@ -543,9 +645,8 @@ def test_save_refuses_text_that_runs_off_the_figure(tmp_path):
 
 def test_a_label_that_cannot_move_is_rejected_rather_than_left_in_place():
     """Sliding a label moves its anchor, which only carries the text along
-    when the text is positioned as an offset from it. Anchoring it any other
-    way used to leave the placement quietly optimising a box that never
-    moved."""
+    when the text is positioned as an offset from it. Anchored any other
+    way, the placement would quietly optimise a box that never moves."""
     ft.setup()
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1], label='a')
@@ -582,13 +683,13 @@ def test_a_marker_only_series_occupies_its_markers_not_the_gaps():
     plt.close(fig)
 
 
-def test_data_lines_excludes_reference_rules_and_guides():
+def test_data_lines_excludes_reference_rules_and_curves():
     ft.setup()
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1], label='series')
     ax.axhline(0.5)
     ax.axvline(0.5)
-    ft.guide(ax, [0, 1], [1, 0])
+    ft.refcurve(ax, [0, 1], [1, 0])
     assert [ln.get_label() for ln in ft._data_lines(ax)] == ['series']
     plt.close(fig)
 
@@ -606,8 +707,8 @@ def test_key_moves_to_a_corner_the_data_leaves_free():
 
 
 def test_key_avoids_strokes_drawn_as_collections():
-    """Dumbbell connectors and dot-plot stems are LineCollections, which the
-    corner search used to be blind to: a key could park right on them."""
+    """Dumbbell connectors and dot-plot stems are LineCollections, outside
+    `ax.lines`: a corner search blind to them would park a key on them."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(5, 3))
     ax.set_xlim(0, 1)
@@ -682,7 +783,8 @@ def _packed_key(ax, **kw):
 ])
 def test_collisions_measures_a_key_packed_from_offset_boxes(case, found):
     """A key built from offset boxes sits on the axes as one artist, outside
-    `ax.texts`, and used to pass wherever it sat. It is one label: its
+    `ax.texts`, so a check reading only `ax.texts` would pass it wherever
+    it sat. It is one label: its
     pieces abut by construction, so they are not tested against each other,
     and the block they make is tested like any other label."""
     ft.setup()
@@ -709,8 +811,8 @@ def test_collisions_measures_a_key_packed_from_offset_boxes(case, found):
 
 def test_lines_against_category_names_are_measured_where_they_are_plotted():
     """A line plotted against names sits at the names' positions on the
-    axis; the check and the direct labels read those positions, and used to
-    fail converting the names themselves to numbers."""
+    axis; the check and the direct labels read those positions rather than
+    trying to convert the names themselves to numbers."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(4.1, 2.6))
     ax.plot([0.2, 0.5, 0.8], ['Portugal', 'Spain', 'Italy'])
@@ -742,9 +844,8 @@ def _kinds(fig):
 @pytest.mark.parametrize('where, found', [('upper left', set()),
                                           ('center', {'label/shape'})])
 def test_collisions_measures_an_arrow_by_its_outline(where, found):
-    """A key beside its arrows, the case that ran a key into them at the
-    slide size. A diagonal arrow leaves most of its bounding box empty: a
-    key there is clear, one across the shaft is not."""
+    """A key beside a diagonal arrow, which leaves most of its bounding box
+    empty: a key there is clear, one across the shaft is not."""
     fig, ax = _unit_panel()
     ax.arrow(0.1, 0.1, 0.8, 0.8, width=0.03, length_includes_head=True,
              color=ft.PALETTE[1], lw=0)
@@ -811,6 +912,24 @@ def test_point_labels_clear_large_markers_their_check_measures():
     plt.close(fig)
 
 
+@pytest.mark.parametrize('draw', ['line', 'stroke'])
+@pytest.mark.parametrize('x', [0.5, 0.97])
+def test_point_labels_clear_the_lines_and_strokes_their_check_measures(draw, x):
+    """`label_points` dodges plotted lines and stroke collections (dumbbell
+    connectors, dot-plot stems), which `collisions` measures. A point on a
+    line has the line on both sides; a point at the end of a stroke that
+    reaches the panel's edge has no room on the open side, so the spot
+    level with it on the other side lies on the stroke."""
+    fig, ax = _unit_panel()
+    if draw == 'line':
+        ax.plot([0.2, 0.97], [0.5, 0.5], label='level')
+    else:
+        ax.hlines([0.5], 0.2, 0.97)
+    ft.label_points(ax, [x], [0.5], ['a point'])
+    assert ft.collisions(fig) == []
+    plt.close(fig)
+
+
 @pytest.mark.parametrize('y, found', [(0.9, set()),                # clear of it
                                       (0.47, set()),               # wholly inside
                                       (0.7, {'label/shape'})])     # across the top
@@ -857,7 +976,7 @@ def test_key_entries_clear_each_other_in_a_small_panel():
     x = np.linspace(0, 1, 30)
     ax.plot(x, 0.05 + 0.02 * x, color=ft.PALETTE[0], label='a')
     ax.set_ylim(0, 1)   # keep the line at the bottom, corners free
-    ft.key(ax, [('leaders', ft.PALETTE[0]), ('envelope', ft.PALETTE[0]),
+    ft.key(ax, [('leaders', ft.PALETTE[0]), ('envelope', ft.PALETTE[2]),
                 ('EU', ft.GREY['rule']), ('Portugal', ft.PALETTE[1])])
     assert ft.collisions(fig) == []
     plt.close(fig)
@@ -866,8 +985,7 @@ def test_key_entries_clear_each_other_in_a_small_panel():
 def test_key_entries_clear_each_other_in_a_tall_panel():
     """The opposite case: in a tall panel the entries are small in axes
     fraction, and a step of 15% of their height leaves less than the
-    collision pad between them (the paper's 27-country decomposition, once
-    constrained layout let the panel fill the figure)."""
+    collision pad between them."""
     ft.setup()
     fig, ax = plt.subplots(figsize=(5.9, 6.6))
     x = np.linspace(0, 1, 30)
@@ -918,7 +1036,7 @@ def test_band_inherits_the_colour_of_the_series_it_wraps():
     fig, ax = plt.subplots()
     x = np.arange(10.0)
     ax.plot(x, x, color=ft.PALETTE[1], label='s')
-    poly = ft.band(ax, x, x - 1, x + 1)
+    poly, = ft.band(ax, x, x - 1, x + 1)
     got = matplotlib.colors.to_hex(poly.get_facecolor()[0])
     assert got == ft.PALETTE[1].lower()
     plt.close(fig)
@@ -946,7 +1064,7 @@ def test_pointrange_is_labelled_like_any_series_and_checks_clean():
     fig, ax = plt.subplots(figsize=(5.2, 3.2))
     t = np.arange(-4, 5)
     b = 0.05 * t
-    ln = ft.pointrange(ax, t, b, b - 0.1, b + 0.1, label='effect')
+    ln, _ = ft.pointrange(ax, t, b, b - 0.1, b + 0.1, label='effect')
     ft.refline(ax, 0)
     ft.refline(ax, -0.5, axis='x')
     ft.label_lines(ax)
@@ -991,13 +1109,29 @@ def test_label_scatter_marks_are_data_not_labels():
     plt.close(fig)
 
 
+def test_a_label_over_a_scatter_name_is_a_collision():
+    """Names sit on lines and markers as dots would, and overprint one
+    another as the observations they mark do; a note printed over a name
+    hides an observation."""
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(4.1, 2.6))
+    ax.plot([0.5, 1.5], [1.0, 1.0], label='through two names')
+    ax.scatter([1.0], [1.0])
+    ft.label_scatter(ax, [1.0, 1.001, 2.0, 3.0], [1.0, 1.001, 2.0, 3.0],
+                     ['a', 'b', 'c', 'd'])
+    assert ft.collisions(fig) == []
+    ax.annotate('a note', xy=(2.0, 2.0), ha='center', va='center')
+    assert ft.collisions(fig) == [(0, 'label/label', "'c' over 'a note'")]
+    plt.close(fig)
+
+
 def test_binscatter_bins_and_recovers_the_slope():
     ft.setup()
     fig, ax = plt.subplots()
     rng = np.random.default_rng(0)
     x = rng.normal(size=400)
     y = 2.0 * x + rng.normal(scale=0.1, size=400)
-    xm, ym, slope = ft.binscatter(ax, x, y, bins=20)
+    xm, _, slope = ft.binscatter(ax, x, y, bins=20)
     assert len(xm) == 20
     assert slope == pytest.approx(2.0, abs=0.05)
     plt.close(fig)
@@ -1021,6 +1155,88 @@ def test_binscatter_refuses_missings():
     fig, ax = plt.subplots()
     with pytest.raises(ValueError, match='missings'):
         ft.binscatter(ax, [1.0, np.nan], [1.0, 2.0])
+    plt.close(fig)
+
+
+# Years of schooling: five support points, as a survey records them.
+SCHOOLING = (4.0, 6.0, 9.0, 12.0, 16.0)
+
+
+def _schooling(n=5000, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.choice(SCHOOLING, size=n, p=[0.1, 0.2, 0.3, 0.25, 0.15])
+    return x, 0.1 * x + rng.normal(size=n)
+
+
+def test_binscatter_gives_a_discrete_x_one_bin_per_value():
+    """Twenty equal-count bins would put several bins at x = 12 whose y
+    means differ only by sampling noise, and others astride two values at
+    an x no observation takes. Each value is its own bin instead."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    x, y = _schooling()
+    xm, ym, _ = ft.binscatter(ax, x, y, bins=20)
+    assert list(xm) == list(SCHOOLING)
+    assert ym == pytest.approx([y[x == v].mean() for v in SCHOOLING])
+    plt.close(fig)
+
+
+def test_binscatter_keeps_a_mass_point_in_one_bin():
+    """Half the observations at zero fill ten of the twenty quantile bins:
+    they make one bin, the bins they empty are dropped, and the other ten
+    stay."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    rng = np.random.default_rng(1)
+    x = np.concatenate([np.zeros(1000), rng.uniform(1, 2, 1000)])
+    xm, _, _ = ft.binscatter(ax, x, x + rng.normal(size=2000), bins=20)
+    assert len(xm) == 11
+    assert xm[0] == 0 and (xm[1:] >= 1).all()
+    plt.close(fig)
+
+
+def test_binscatter_gives_continuous_x_every_bin():
+    ft.setup()
+    fig, ax = plt.subplots()
+    rng = np.random.default_rng(3)
+    for n in (400, 1003):    # bins of equal and of unequal counts
+        x = rng.normal(size=n)
+        xm, _, _ = ft.binscatter(ax, x, x + rng.normal(size=n), bins=20)
+        assert len(xm) == 20 and (np.diff(xm) > 0).all()
+    plt.close(fig)
+
+
+def test_binscatter_does_not_depend_on_the_order_of_the_rows():
+    """Rounded data, so many values are tied and more than `bins` remain:
+    the bin means and the slope come out the same to the last digit
+    whatever order the rows arrive in."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    rng = np.random.default_rng(4)
+    x = np.round(rng.normal(size=3000), 1)
+    y = x + rng.normal(size=3000)
+    first = ft.binscatter(ax, x, y, bins=20)
+    for _ in range(3):
+        o = rng.permutation(len(x))
+        again = ft.binscatter(ax, x[o], y[o], bins=20)
+        assert np.array_equal(again.x, first.x)
+        assert np.array_equal(again.y, first.y)
+        assert again.slope == first.slope
+    plt.close(fig)
+
+
+def test_binscatter_draws_its_fit_across_the_bin_means():
+    """With skewed x the largest observations sit far beyond the last bin
+    mean. A fit drawn out to them would run where no dot is shown and set
+    the panel's width by the single most extreme observation."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    rng = np.random.default_rng(5)
+    x = np.exp(rng.normal(size=2000))
+    xm, _, _ = ft.binscatter(ax, x, x + rng.normal(size=2000))
+    fit, = [ln for ln in ax.get_lines() if ln._figtools_refcurve]
+    assert list(fit.get_xdata()) == [xm[0], xm[-1]]
+    assert ax.get_xlim()[1] < x.max()
     plt.close(fig)
 
 
@@ -1059,6 +1275,97 @@ def test_save_rejects_an_unknown_target(tmp_path):
     plt.close(fig)
 
 
+def test_a_reopened_figure_from_another_version_is_refused(tmp_path):
+    """Another version's pickle can load and still be wrong (its label
+    placement disconnected from the draw), so `load` refuses it. A figure
+    pickled without the stamp stands in for one from before the stamp."""
+    ft.setup()
+    fig = _small_figure()
+    unstamped = tmp_path / 'old.pkl'
+    unstamped.write_bytes(pickle.dumps(fig))
+    with pytest.raises(ValueError, match=rf'no figtools version.*'
+                                         rf'figtools {re.escape(ft.__version__)}'
+                                         r'.*rerun the code'):
+        ft.load(unstamped)
+    fig._figtools_version = '0.7.0'
+    other = tmp_path / 'other.pkl'
+    other.write_bytes(pickle.dumps(fig))
+    with pytest.raises(ValueError, match=rf'figtools 0\.7\.0.*'
+                                         rf'figtools {re.escape(ft.__version__)}'
+                                         r'.*rerun the code'):
+        ft.load(other)
+    plt.close(fig)
+
+
+def test_a_pickle_naming_code_this_version_lacks_or_holding_no_figure_is_refused(
+        tmp_path, monkeypatch):
+    """A pickle from a version with private names this one lacks fails
+    inside unpickling, before its stamp can be read; `load` says what to do
+    rather than passing matplotlib's AttributeError on."""
+    class _Gone:
+        pass
+    _Gone.__module__, _Gone.__qualname__ = 'figtools', '_Gone'
+    monkeypatch.setattr(ft, '_Gone', _Gone, raising=False)
+    future = tmp_path / 'future.pkl'
+    future.write_bytes(pickle.dumps(_Gone()))
+    monkeypatch.delattr(ft, '_Gone')
+    with pytest.raises(ValueError, match=r'lacks.*rerun the code'):
+        ft.load(future)
+    junk = tmp_path / 'junk.pkl'
+    junk.write_bytes(pickle.dumps([1, 2]))
+    with pytest.raises(TypeError, match=r'holds a list, not a figure'):
+        ft.load(junk)
+
+
+def test_save_takes_targets_from_any_iterable_and_refuses_none_or_a_string(tmp_path):
+    """The checks and the writing each pass over `targets`, so a generator
+    would be spent after the first and nothing written, with no error."""
+    ft.setup()
+    fig = _small_figure()
+    written = ft.save(fig, tmp_path / 'gen', targets=(t for t in ['paper']))
+    assert [p.name for p in written] == ['gen.pdf']
+    with pytest.raises(ValueError, match='targets is empty'):
+        ft.save(fig, tmp_path / 'none', targets=[])
+    with pytest.raises(ValueError, match=r"\('paper',\)"):
+        ft.save(fig, tmp_path / 'str', targets='paper')
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['gen.pdf']
+    plt.close(fig)
+
+
+def test_widths_naming_a_new_target_adds_its_file(tmp_path):
+    ft.setup()
+    fig = _small_figure()
+    written = ft.save(fig, tmp_path / 'fig', widths={'poster': 9.0})
+    assert [p.name for p in written] == ['fig.pdf', 'fig_slides.pdf',
+                                         'fig_poster.pdf']
+    assert _width_in(written[2]) == pytest.approx(9.0, abs=0.01)
+    plt.close(fig)
+
+
+def test_widths_can_resize_paper_or_slides(tmp_path):
+    ft.setup()
+    fig = _small_figure()
+    paper, slides = ft.save(fig, tmp_path / 'fig', widths={'paper': 6.2})
+    assert _width_in(paper) == pytest.approx(6.2, abs=0.01)
+    assert _width_in(slides) == pytest.approx(4.1, abs=0.01)
+    poster, = ft.save(fig, tmp_path / 'big', targets=('poster',),
+                      widths={'poster': 9.0})
+    assert poster.name == 'big_poster.pdf'
+    plt.close(fig)
+
+
+def test_a_width_for_a_target_left_out_is_refused(tmp_path):
+    """Ignored, the poster width would leave the caller expecting a file
+    that was never written."""
+    ft.setup()
+    fig = _small_figure()
+    with pytest.raises(ValueError, match=r"widths names \['poster'\]"):
+        ft.save(fig, tmp_path / 'fig', targets=('paper',),
+                widths={'poster': 9.0})
+    assert list(tmp_path.iterdir()) == []
+    plt.close(fig)
+
+
 def test_save_refuses_a_missing_directory(tmp_path):
     ft.setup()
     fig, ax = plt.subplots()
@@ -1070,9 +1377,9 @@ def test_save_refuses_a_missing_directory(tmp_path):
 
 # --- whole-number ticks -------------------------------------------------------
 
-# The interval and tick count of the figure that prompted the rule: sixteen
-# years of employment shares in one panel of a pair, whose direct labels
-# ("new regulation", country names) leave the axis room for seven ticks.
+# An interval and tick count where matplotlib's default steps go fractional:
+# sixteen years in one panel of a pair, whose direct labels ("new
+# regulation", country names) leave the axis room for seven ticks.
 YEARS, NBINS = (2007.25, 2023.18), 7
 
 
@@ -1147,3 +1454,480 @@ def test_an_axes_with_nothing_readable_is_left_alone():
     ticks = ax.get_xticks()
     assert not np.array_equal(ticks, np.round(ticks)), ticks
     plt.close(fig)
+
+
+# --- export size ----------------------------------------------------------------
+
+def _width_in(pdf):
+    """A PDF's page width in inches, read from its MediaBox."""
+    box = re.search(rb'/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)'
+                    rb'\s+([-\d.]+)\s*\]', pdf.read_bytes())
+    x0, _, x1, _ = (float(v) for v in box.groups())
+    return (x1 - x0) / 72
+
+
+def test_save_writes_each_target_at_its_exact_width(tmp_path):
+    """Cropped to its drawn content and padded, a figure meant for 5.9in
+    comes out about 6.02in wide."""
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    yr = np.arange(2000, 2020)
+    for name, end in [('first', 2.0), ('second', 1.5), ('third', 1.0)]:
+        ax.plot(yr, np.linspace(1, end, 20), label=name)
+    ft.label_lines(ax)
+    paper, slides = ft.save(fig, tmp_path / 'demo')
+    assert _width_in(paper) == pytest.approx(5.9, abs=0.01)
+    assert _width_in(slides) == pytest.approx(4.1, abs=0.01)
+    plt.close(fig)
+
+
+def test_figures_built_alike_save_at_one_size(tmp_path):
+    """The one-scale recipe: one figure size and one axes box, so figures
+    differing only in their tick labels stack aligned. Cropped to their
+    content, as a plain savefig crops them, the two differ."""
+    ft.setup()
+    saved, cropped = [], []
+    for top in (1, 50000):
+        fig = plt.figure(figsize=(5.9, 3.0), layout='none')
+        ax = fig.add_axes([0.15, 0.15, 0.8, 0.8])
+        ax.plot([0, 1], [0, top])
+        saved.append([_width_in(p) for p in ft.save(fig, tmp_path / f'{top}')])
+        fig.savefig(tmp_path / f'{top}_cropped.pdf')
+        cropped.append(_width_in(tmp_path / f'{top}_cropped.pdf'))
+        plt.close(fig)
+    assert saved[0] == pytest.approx([5.9, 4.1], abs=0.01)
+    assert saved[1] == pytest.approx([5.9, 4.1], abs=0.01)
+    assert abs(cropped[0] - cropped[1]) > 0.05
+
+
+# --- the digest switch ----------------------------------------------------------
+
+def _carries_digest(pdf):
+    return digest.from_pdf(pdf.read_bytes()) is not None
+
+
+def _small_figure():
+    fig, ax = plt.subplots(figsize=(5.9, 3.0))
+    ax.plot([2000, 2010], [0, 1], label='a')
+    return fig
+
+
+def test_save_leaves_the_digest_out_when_told(tmp_path):
+    ft.setup()
+    fig = _small_figure()
+    on, = ft.save(fig, tmp_path / 'on', targets=('paper',))
+    off, = ft.save(fig, tmp_path / 'off', targets=('paper',), digest=False)
+    assert _carries_digest(on)
+    assert not _carries_digest(off)
+    plt.close(fig)
+
+
+def test_setup_without_the_digest_reaches_save(tmp_path):
+    """Turned off in `setup`, the digest stays out of what `save` writes
+    unless a call asks for it."""
+    try:
+        ft.setup(digest=False)
+        fig = _small_figure()
+        off, = ft.save(fig, tmp_path / 'off', targets=('paper',))
+        on, = ft.save(fig, tmp_path / 'on', targets=('paper',), digest=True)
+        assert not _carries_digest(off)
+        assert _carries_digest(on)
+        plt.close(fig)
+    finally:
+        ft.setup()
+
+
+def test_setup_and_save_refuse_a_digest_that_is_not_true_or_false(tmp_path):
+    with pytest.raises(TypeError, match='setup: digest'):
+        ft.setup(digest='no')
+    ft.setup()
+    fig = _small_figure()
+    with pytest.raises(TypeError, match='save: digest'):
+        ft.save(fig, tmp_path / 'x', digest=0)
+    plt.close(fig)
+
+
+def _matplotlib_linear_scale():
+    """Put matplotlib's own linear scale back, as a process that never ran
+    `setup` has it. From matplotlib 3.11 registering it warns that its
+    constructor takes the axis, which is matplotlib's business, not the
+    test's."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', PendingDeprecationWarning)
+        matplotlib.scale.register_scale(matplotlib.scale.LinearScale)
+
+
+def test_style_undoes_the_rcparams_and_the_scale_on_leaving():
+    """Inside the block the style holds; after it, matplotlib is as it was,
+    its own linear scale included, so other plotting in the process is
+    untouched."""
+    matplotlib.rcdefaults()
+    _matplotlib_linear_scale()
+    before = dict(plt.rcParams)
+    try:
+        with ft.style(base=14):
+            assert plt.rcParams['axes.labelsize'] == 14
+            fig, ax = plt.subplots()
+            assert isinstance(ax.xaxis.get_major_locator(),
+                              ft._WholeNumberLocator)
+            plt.close(fig)
+        assert dict(plt.rcParams) == before
+        fig, ax = plt.subplots()
+        assert not isinstance(ax.xaxis.get_major_locator(),
+                              ft._WholeNumberLocator)
+        plt.close(fig)
+        # After `setup`, the block leaves the figtools scale in place.
+        ft.setup()
+        with ft.style():
+            pass
+        fig, ax = plt.subplots()
+        assert isinstance(ax.xaxis.get_major_locator(), ft._WholeNumberLocator)
+        plt.close(fig)
+    finally:
+        ft.setup()
+
+
+def test_style_puts_back_the_digest_as_it_found_it(monkeypatch):
+    """The notebook formatters carry the digest after the block exactly
+    when they did before it, and `save` follows the choice made before it.
+    Outside a notebook there are no formatters to wrap, so a stand-in
+    records whether they would carry it."""
+    shell = {'armed': False}
+    monkeypatch.setattr(digest, 'installed', lambda: shell['armed'])
+    monkeypatch.setattr(digest, 'install', lambda: shell.update(armed=True))
+    monkeypatch.setattr(digest, 'uninstall', lambda: shell.update(armed=False))
+    try:
+        ft.setup(digest=False)
+        with ft.style():
+            assert shell['armed'] and ft._digest_on
+        assert not shell['armed'] and not ft._digest_on
+        ft.setup()
+        with ft.style(digest=False):
+            assert not shell['armed'] and not ft._digest_on
+        assert shell['armed'] and ft._digest_on
+    finally:
+        ft.setup()
+
+
+def test_leaving_style_puts_matplotlib_scale_back_without_a_warning():
+    """Putting back matplotlib's own linear scale makes matplotlib 3.11 warn
+    that its constructor takes the axis; under `-W error` that warning
+    would crash the exit and leave the digest choice as the block set it.
+    New axes still get matplotlib's scale afterwards."""
+    try:
+        # A process that never ran `setup`: matplotlib's scale, digest on.
+        ft.setup()
+        _matplotlib_linear_scale()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', PendingDeprecationWarning)
+            with ft.style(digest=False):
+                assert not ft._digest_on
+        assert ft._digest_on
+        assert (matplotlib.scale._scale_mapping['linear']
+                is matplotlib.scale.LinearScale)
+        fig, ax = plt.subplots()
+        assert not isinstance(ax.xaxis.get_major_locator(),
+                              ft._WholeNumberLocator)
+        plt.close(fig)
+    finally:
+        ft.setup()
+
+
+def test_style_puts_back_the_digest_before_the_scale(monkeypatch):
+    """Should putting the scale back fail, the digest choice is already
+    restored, so `save` does not keep following the block's choice."""
+    def broken(scale):
+        raise RuntimeError('register_scale failed')
+
+    try:
+        ft.setup(digest=False)
+        with (pytest.raises(RuntimeError, match='register_scale failed'),
+              ft.style(digest=True)):
+            monkeypatch.setattr(matplotlib.scale, 'register_scale', broken)
+        assert not ft._digest_on
+    finally:
+        monkeypatch.undo()
+        ft.setup()
+
+
+# --- palette ----------------------------------------------------------------------
+
+def test_the_colour_cycle_runs_through_all_seven_colours():
+    ft.setup()
+    assert len(ft.PALETTE) == 7
+    assert 'PALETTE_LONG' not in ft.__all__
+    fig, ax = plt.subplots()
+    lines = [ax.plot([0, 1], [i, i])[0] for i in range(7)]
+    assert ([matplotlib.colors.to_hex(ln.get_color()) for ln in lines]
+            == [c.lower() for c in ft.PALETTE])
+    plt.close(fig)
+
+
+def test_label_lines_refuses_two_series_drawn_alike():
+    """The eighth series of an unstyled plot comes round to the first
+    colour, and two labels in one blue would each name both lines."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(2000, 2021)
+    for i in range(8):
+        ax.plot(x, np.full(x.shape, float(i)), label=f's{i}')
+    with pytest.raises(ValueError, match=r"'s0' and 's7'.*colours explicitly"):
+        ft.label_lines(ax)
+    plt.close(fig)
+
+
+def test_label_lines_tells_lines_in_one_colour_apart_by_dashes_or_markers():
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    x = np.arange(2000, 2021)
+    blue = ft.PALETTE[0]
+    ax.plot(x, np.full(x.shape, 0.0), color=blue, label='observed')
+    ax.plot(x, np.full(x.shape, 1.0), color=blue, ls='--', label='projected')
+    # A custom pattern reports the line style '--' too.
+    ax.plot(x, np.full(x.shape, 2.0), color=blue, ls=(0, (1, 1)),
+            label='dotted')
+    ax.plot(x, np.full(x.shape, 3.0), color=blue, marker='o', label='marked')
+    assert len(ft.label_lines(ax)) == 4
+    plt.close(fig)
+
+
+def test_key_refuses_two_entries_in_one_colour():
+    ft.setup()
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError,
+                       match=r"'leaders' and 'envelope'.*colours explicitly"):
+        ft.key(ax, [('leaders', ft.PALETTE[0]), ('envelope', '#0077bb')])
+    plt.close(fig)
+
+
+# --- what the helpers return ------------------------------------------------------
+
+def _shows_nothing(result):
+    return DisplayFormatter().format(result) == ({}, {})
+
+
+def test_a_plain_list_shows_in_a_notebook():
+    """The companion to the tests below: an ordinary list of artists is
+    displayed, so an empty display is the helpers' doing."""
+    assert not _shows_nothing([1])
+
+
+def test_line_helpers_return_what_they_drew_and_show_nothing():
+    ft.setup()
+    fig, ax = plt.subplots(figsize=(5.9, 3.4))
+    x = np.arange(2000, 2021)
+    ax.plot(x, np.linspace(0, 1, 21), label='a')
+    ax.plot(x, np.linspace(1, 0, 21), label='b')
+    got = {
+        'band': ft.band(ax, x, np.linspace(-0.1, 0.9, 21),
+                        np.linspace(0.1, 1.1, 21)),
+        'refcurve': ft.refcurve(ax, [2000, 2020], [0.5, 0.5]),
+        'rule': ft.refline(ax, 0.2),
+        'named rule': ft.refline(ax, 0.8, 'target'),
+        'span': ft.shade(ax, 2005, 2008),
+        'named span': ft.shade(ax, 2010, 2012, 'recession'),
+        'labels': ft.label_lines(ax),
+        'last': ft.label_last(ax, 2020, 0.5, 'note', 'black'),
+    }
+    for name, r in got.items():
+        assert _shows_nothing(r), name
+    Line2D, Annotation = matplotlib.lines.Line2D, matplotlib.text.Annotation
+    band, = got['band']
+    assert isinstance(band, matplotlib.collections.PolyCollection)
+    curve, = got['refcurve']
+    assert isinstance(curve, Line2D) and curve._figtools_refcurve
+    rule, = got['rule']
+    assert isinstance(rule, Line2D)
+    rule, ann = got['named rule']
+    assert isinstance(rule, Line2D) and ann.get_text() == 'target'
+    span, = got['span']
+    assert isinstance(span, matplotlib.patches.Patch)
+    span, ann = got['named span']
+    assert isinstance(span, matplotlib.patches.Patch)
+    assert ann.get_text() == 'recession'
+    assert [a.get_text() for a in got['labels']] == ['a', 'b']
+    last, = got['last']
+    assert isinstance(last, Annotation) and last.get_text() == 'note'
+    plt.close(fig)
+
+
+def test_point_helpers_return_what_they_drew_and_show_nothing(tmp_path):
+    ft.setup()
+    _, axes = plt.subplots(1, 6, figsize=(14, 3))
+    Line2D = matplotlib.lines.Line2D
+    LineCollection = matplotlib.collections.LineCollection
+    PathCollection = matplotlib.collections.PathCollection
+    got = {
+        'pointrange': ft.pointrange(axes[0], [1, 2, 3], [0.1, 0.2, 0.3],
+                                    [0, 0.1, 0.2], [0.2, 0.3, 0.4],
+                                    label='beta'),
+        'intervals': ft.dotplot(axes[1], ['a', 'b'], [1.0, 2.0],
+                                ci=([0.5, 1.5], [1.5, 2.5])),
+        'stems': ft.dotplot(axes[2], ['a', 'b'], [1.0, 2.0]),
+        'dots': ft.dotplot(axes[3], ['a', 'b'], [1.0, 2.0], stem=False),
+        'points': ft.label_points(axes[4], [0, 1], [0, 1], ['p', 'q']),
+        'key': ft.key(axes[4], [('p', ft.PALETTE[0]), ('q', ft.PALETTE[1])]),
+        'scatter': ft.label_scatter(axes[5], [1.0, 2.0, 3.0], [1.0, 3.0, 2.0],
+                                    ['u', 'v', 'w'], fit=True, note=True),
+        'save': ft.save(_small_figure(), tmp_path / 'f'),
+    }
+    for name, r in got.items():
+        assert _shows_nothing(r), name
+    marks, bars = got['pointrange']
+    assert isinstance(marks, Line2D) and marks.get_label() == 'beta'
+    assert isinstance(bars, LineCollection)
+    for name in ('intervals', 'stems'):
+        strokes, dots = got[name]
+        assert isinstance(strokes, LineCollection)
+        assert isinstance(dots, PathCollection)
+    dots, = got['dots']
+    assert isinstance(dots, PathCollection)
+    assert [a.get_text() for a in got['points']] == ['p', 'q']
+    assert [a.get_text() for a in got['key']] == ['p', 'q']
+    *names, fit, note = got['scatter']
+    assert [a.get_text() for a in names] == ['u', 'v', 'w']
+    assert isinstance(fit, Line2D) and fit._figtools_refcurve
+    assert note.get_text().startswith('N = 3')
+    assert [p.name for p in got['save']] == ['f.pdf', 'f_slides.pdf']
+    assert ft.grid_axis(axes[0], 'y') is None
+    plt.close('all')
+
+
+def test_binscatter_returns_named_bin_means_that_unpack_and_show_nothing():
+    ft.setup()
+    fig, ax = plt.subplots()
+    x = np.arange(100.0)
+    got = ft.binscatter(ax, x, 2 * x, bins=5)
+    xm, ym, slope = got
+    assert got.x is xm and got.y is ym and got.slope == slope
+    assert len(xm) == 5 and slope == pytest.approx(2.0)
+    assert _shows_nothing(got)
+    plt.close(fig)
+
+
+# --- keyword overrides, colours and arguments ---------------------------------
+
+def test_keywords_override_the_helpers_defaults():
+    """Passed beside the defaults, each of these would raise 'got multiple
+    values for keyword argument'."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], label='a')
+    rule, = ft.refline(ax, 0.5, color='red', linewidth=2)
+    assert matplotlib.colors.to_hex(rule.get_color()) == '#ff0000'
+    assert rule.get_linewidth() == 2
+    span, = ft.shade(ax, 0.1, 0.2, color='0.8')
+    assert matplotlib.colors.to_hex(span.get_facecolor()) == '#cccccc'
+    curve, = ft.refcurve(ax, [0, 1], [1, 0], zorder=3)
+    assert curve.get_zorder() == 3
+    last, = ft.label_last(ax, 1, 1, 'end', 'black', va='bottom')
+    assert last.get_va() == 'bottom'
+    # A face colour replaces the default colour without matplotlib's
+    # warning about the two together.
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        span, = ft.shade(ax, 0.3, 0.4, facecolor='0.7')
+    assert (matplotlib.colors.to_hex(span.get_facecolor())
+            == matplotlib.colors.to_hex('0.7'))
+    plt.close(fig)
+
+
+def test_label_last_takes_its_position_from_the_caller():
+    """`dx` and `dy` are the default offset; `xytext` and `textcoords`
+    replace it, like every other keyword passed to `ax.annotate`."""
+    ft.setup()
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    near, = ft.label_last(ax, 1, 1, 'near', 'black', dx=6, dy=2)
+    assert near.xyann == (6, 2) and near.anncoords == 'offset points'
+    on, = ft.label_last(ax, 1, 1, 'on', 'black', xytext=(0, 0))
+    assert on.xyann == (0, 0) and on.anncoords == 'offset points'
+    there, = ft.label_last(ax, 1, 1, 'there', 'black', xytext=(0.5, 0.2),
+                           textcoords='data')
+    assert there.xyann == (0.5, 0.2) and there.anncoords == 'data'
+    plt.close(fig)
+
+
+def test_an_rgb_tuple_is_one_colour_for_every_row():
+    """Read as one colour per row, a tuple's three numbers would be permuted
+    by the sort, turning a red dot plot blue, and six rows would be
+    refused."""
+    ft.setup()
+    red = (0.8, 0.1, 0.1)
+    for values in ([3, 1, 2], [3, 1, 2, 6, 5, 4]):
+        fig, ax = plt.subplots()
+        _, dots = ft.dotplot(ax, [f'r{i}' for i in range(len(values))],
+                             values, color=red)
+        assert np.allclose(dots.get_facecolor()[:, :3], red)
+        plt.close(fig)
+    fig, (a, b) = plt.subplots(1, 2)
+    for ann in ft.label_points(a, [0, 1, 2], [0, 1, 2], ['a', 'b', 'c'],
+                               color=red):
+        assert matplotlib.colors.to_rgb(ann.get_color()) == pytest.approx(red)
+    for ann in ft.label_scatter(b, [0, 1, 2], [0, 1, 2], ['a', 'b', 'c'],
+                                color=red):
+        assert matplotlib.colors.to_rgb(ann.get_color()) == pytest.approx(red)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('call, message', [
+    (lambda ax: ft.key(ax, [('a', ft.PALETTE[0])], loc='top left'),
+     'key: loc'),
+    (lambda ax: ft.refline(ax, 0, axis='z'), 'refline: axis'),
+    (lambda ax: ft.grid_axis(ax, 'z'), 'grid_axis: axis'),
+    (lambda ax: ft.dotplot(ax, ['a', 'b'], [1.0, 2.0, 3.0]),
+     'dotplot: 2 labels for 3 values'),
+    (lambda ax: ft.binscatter(ax, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0], bins=2.5),
+     'binscatter: bins'),
+    (lambda ax: ft.binscatter(ax, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0], bins=4),
+     'binscatter: bins'),
+])
+def test_bad_arguments_are_refused_with_a_message(call, message):
+    ft.setup()
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError, match=message):
+        call(ax)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('name', ['fig.png', 'fig.SVG', 'fig.jpeg', 'fig.tiff',
+                                  'fig.webp', 'fig.pgf', 'fig.svgz'])
+def test_save_refuses_a_path_naming_another_image_format(tmp_path, name):
+    """Only PDFs are written; kept as part of the name, the extension would
+    give 'fig.png.pdf'. Every format matplotlib saves to counts, the ones
+    researchers rarely type ('.pgf', '.svgz') included."""
+    ft.setup()
+    fig = _small_figure()
+    with pytest.raises(ValueError, match='without an extension'):
+        ft.save(fig, tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+    plt.close(fig)
+
+
+def test_save_keeps_any_other_suffix_as_part_of_the_name(tmp_path):
+    """Taken for an extension, the suffix of 'fig.v2' would send the pickle
+    to 'fig.pkl'."""
+    ft.setup()
+    fig = _small_figure()
+    written = ft.save(fig, tmp_path / 'fig.v2', retouch=True)
+    assert [p.name for p in written] == ['fig.v2.pdf', 'fig.v2_slides.pdf',
+                                         'fig.v2.pkl']
+    written = ft.save(fig, tmp_path / 'fig.pdf', targets=('paper',))
+    assert [p.name for p in written] == ['fig.pdf']
+    plt.close(fig)
+
+
+def test_scatter_names_sit_two_points_below_the_running_size_and_the_note_at_it():
+    ft.setup()
+    fig, ax = plt.subplots()
+    *names, _, note = ft.label_scatter(ax, [1.0, 2.0, 3.0], [1.0, 3.0, 2.0],
+                                       ['a', 'b', 'c'], fit=True, note=True)
+    size = plt.rcParams['xtick.labelsize']
+    assert {t.get_fontsize() for t in names} == {size - 2}
+    assert note.get_fontsize() == size
+    plt.close(fig)
+
+
+def test_the_version_is_the_installed_package_version():
+    assert ft.__version__ == importlib.metadata.version('figtools')
+    assert '__version__' in ft.__all__
