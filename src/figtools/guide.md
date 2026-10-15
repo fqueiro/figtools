@@ -1,43 +1,43 @@
-# plotsmith: how to use it
+# figtools: how to use it
 
-plotsmith is a matplotlib style and a small set of helpers for research
+figtools is a matplotlib style and a small set of helpers for research
 figures: direct labels in place of legends, a measured check that no label
 collides with anything, export at the physical size of the paper and the
 slides, and a digest of each figure's data that can be read back as text.
-`python -m plotsmith` prints this guide, `python -m plotsmith readme` the
-README with the reasons behind each rule, and `help(ps.<function>)` gives
+`python -m figtools` prints this guide, `python -m figtools readme` the
+README with the reasons behind each rule, and `help(ft.<function>)` gives
 each function's full reference.
 
 ## A figure
 
 ```python
 import matplotlib.pyplot as plt
-import plotsmith as ps
+import figtools as ft
 
-ps.setup()                                    # once per document, before any figure
+ft.setup()                                    # once per document, before any figure
 
 fig, ax = plt.subplots()
 for (region,), d in df.sort('year').group_by('region', maintain_order=True):
     ax.plot(d['year'], d['share'], label=region)
-    ps.band(ax, d['year'], d['lo'], d['hi'])  # interval of the line just drawn
-ps.refline(ax, 0, 'no change')                # a reference rule, named in place
-ps.label_lines(ax)                            # direct labels; never ax.legend()
-ps.save(fig, '../results/figures/share')      # share.pdf and share_slides.pdf
+    ft.band(ax, d['year'], d['lo'], d['hi'])  # interval of the line just drawn
+ft.refline(ax, 0, 'no change')                # a reference rule, named in place
+ft.label_lines(ax)                            # direct labels; never ax.legend()
+ft.save(fig, '../results/figures/share')      # share.pdf and share_slides.pdf
 plt.show()                                    # the cell's last statement
 ```
 
-Regression coefficients: `ps.dotplot(ax, names, estimates, ci=(lo, hi))`
-for a ranked list, `ps.pointrange(ax, x, estimates, lo, hi)` for an event
-study or a profile, each with `ps.refline(ax, 0)`.
+Regression coefficients: `ft.dotplot(ax, names, estimates, ci=(lo, hi))`
+for a ranked list, `ft.pointrange(ax, x, estimates, lo, hi)` for an event
+study or a profile, each with `ft.refline(ax, 0)`.
 
 ## Inputs
 
 - Every helper converts its data arguments with `np.asarray(..., float)`,
-  so Polars columns (`df['x']`) go in as they are. Nothing in plotsmith
+  so Polars columns (`df['x']`) go in as they are. Nothing in figtools
   uses pandas: never convert a frame to plot it.
 - Aggregate in Polars before plotting large data. A scatter of a million
   points is slow to draw and makes a heavy PDF, and the digest keeps at most
-  5,000 points per series. `ps.binscatter(ax, x, y)` bins the microdata
+  5,000 points per series. `ft.binscatter(ax, x, y)` bins the microdata
   itself and fits the slope on every observation.
 - `binscatter(..., controls=)` partials out the controls by dense least
   squares, which suits a few continuous controls. Absorb high-dimensional
@@ -71,11 +71,11 @@ study or a profile, each with `ps.refline(ax, 0)`.
   margins in inches wide enough for the tick and direct labels, since the
   layout engine sizes each axes to its own labels. Set every figure's limits
   by hand to windows of the same span, with room inside the axes for rule
-  labels near the top. plotsmith keeps the limits and the box, and the check
+  labels near the top. figtools keeps the limits and the box, and the check
   refuses a label that does not fit.
 - In a Quarto or Jupyter document, a captioned figure cell produces the
   figure and nothing else: end it with `plt.show()`. A cell ending on a bare
-  `ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` displays the
+  `ft.key(...)`, `ft.dotplot(...)` or `ax.set_xlabel(...)` displays the
   return value as a second output, and Quarto splits the figure into
   subfigures with the caption on the wrong one.
 - `save` writes the paper PDF (5.9 in wide) and the slides PDF (4.1 in),
@@ -87,7 +87,7 @@ study or a profile, each with `ps.refline(ax, 0)`.
 
 - `uv run fig-check code <document>` runs a document (its name without the
   extension, in the folder given first) and fails on any overlapping or
-  clipped label; a plain script uses `assert not ps.collisions(fig)`. It
+  clipped label; a plain script uses `assert not ft.collisions(fig)`. It
   runs the document in the folder Quarto would, its own unless the
   project's `_quarto.yml` sets `execute-dir: project`, so it can be called
   from anywhere.
@@ -106,7 +106,7 @@ study or a profile, each with `ps.refline(ax, 0)`.
   reference rules are furniture any label may cross; heatmap cells and
   images are not measured. The placement helpers dodge what the check
   measures.
-- With `post-render: python -m plotsmith.digest post-render` in the
+- With `post-render: python -m figtools.digest post-render` in the
   project's `_quarto.yml`, `render-digest where <document>` names the folder
   holding the rendered document's figures as text (`outputs.md`, a CSV per
   figure). `render-digest figure <file>.pdf` reads a saved figure's data

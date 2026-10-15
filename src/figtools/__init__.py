@@ -133,7 +133,7 @@ def _text_size():
     try:
         return float(size)
     except (TypeError, ValueError):
-        raise RuntimeError('plotsmith helpers need setup() to have run '
+        raise RuntimeError('figtools helpers need setup() to have run '
                            f'(tick label size is {size!r})') from None
 
 
@@ -261,7 +261,7 @@ def setup(base=BASE_SIZE):
     backend may apply the kernel's own rc settings, and the style below has
     the last word.
     """
-    # Imported here, not at the top: `python -m plotsmith.digest` would
+    # Imported here, not at the top: `python -m figtools.digest` would
     # otherwise run a module the package had already imported.
     from . import digest
     digest.install()

@@ -21,13 +21,13 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from IPython.core.pylabtools import print_figure
 
-import plotsmith as ps
-from plotsmith import digest
+import figtools as ft
+from figtools import digest
 
 
 @pytest.fixture(autouse=True)
 def style():
-    ps.setup()
+    ft.setup()
     yield
     plt.close('all')
 
@@ -41,9 +41,9 @@ def test_lines_rules_and_shades_are_read_with_their_labels():
     years = list(range(1990, 1995))
     ax.plot(years, [1.0, 1.1, 1.2, 1.15, 1.3], label='Portugal')
     ax.plot(years, [1.0, 0.9, 0.95, 1.0, 1.05], label='North')
-    ps.refline(ax, 1, 'parity')
-    ps.shade(ax, 1991, 1992, 'fragile')
-    ps.label_lines(ax)
+    ft.refline(ax, 1, 'parity')
+    ft.shade(ax, 1991, 1992, 'fragile')
+    ft.label_lines(ax)
     p = panel(fig)
     assert [(s['kind'], s['label']) for s in p['series']] == [('line', 'Portugal'), ('line', 'North')]
     assert p['series'][0]['x'] == years and p['series'][0]['y'][-1] == 1.3
@@ -82,7 +82,7 @@ def test_stacked_bars_carry_their_base():
 
 def test_dotplot_reads_positions_intervals_and_the_category_labels():
     fig, ax = plt.subplots()
-    ps.dotplot(ax, ['a', 'b', 'c'], [0.2, -0.1, 0.5], ci=([0.1, -0.3, 0.3], [0.3, 0.1, 0.7]))
+    ft.dotplot(ax, ['a', 'b', 'c'], [0.2, -0.1, 0.5], ci=([0.1, -0.3, 0.3], [0.3, 0.1, 0.7]))
     p = panel(fig)
     pts = next(s for s in p['series'] if s['kind'] == 'points')
     assert pts['y'] == ['b', 'a', 'c'] and pts['x'] == [-0.1, 0.2, 0.5]   # rows sorted by value
@@ -93,7 +93,7 @@ def test_dotplot_reads_positions_intervals_and_the_category_labels():
 
 def test_dotplot_stems_are_furniture_and_its_table_names_rows_by_category():
     fig, ax = plt.subplots()
-    ps.dotplot(ax, ['a', 'b'], [0.2, -0.1])
+    ft.dotplot(ax, ['a', 'b'], [0.2, -0.1])
     d = digest.describe(fig)
     assert [s['kind'] for s in d['panels'][0]['series']] == ['points']
     text = '\n'.join(digest.markdown(d, 'fig-d'))
@@ -103,7 +103,7 @@ def test_dotplot_stems_are_furniture_and_its_table_names_rows_by_category():
 
 def test_pointrange_is_a_marker_series_with_vertical_intervals():
     fig, ax = plt.subplots()
-    ps.pointrange(ax, [1, 2, 3], [0.1, 0.2, 0.3], [0, 0.1, 0.2], [0.2, 0.3, 0.4], label='beta')
+    ft.pointrange(ax, [1, 2, 3], [0.1, 0.2, 0.3], [0, 0.1, 0.2], [0.2, 0.3, 0.4], label='beta')
     p = panel(fig)
     assert [s['kind'] for s in p['series']] == ['points', 'intervals']
     assert p['series'][0]['label'] == 'beta'
@@ -114,7 +114,7 @@ def test_band_takes_the_name_of_its_line_and_errorbars_keep_their_bounds():
     fig, ax = plt.subplots()
     x = [1, 2, 3]
     ax.plot(x, [1, 2, 3], label='fit')
-    ps.band(ax, x, [0.5, 1.5, 2.5], [1.5, 2.5, 3.5])
+    ft.band(ax, x, [0.5, 1.5, 2.5], [1.5, 2.5, 3.5])
     ax.errorbar([1, 2], [5, 6], yerr=[0.5, 1], label='obs', fmt='o')
     p = panel(fig)
     band = next(s for s in p['series'] if s['kind'] == 'band')
@@ -162,8 +162,8 @@ def test_errorbars_without_their_points_are_read_from_the_bars():
 def test_scatter_labelled_points_and_notes():
     fig, ax = plt.subplots()
     ax.scatter([1, 2, 3], [3, 1, 2], label='obs')
-    ps.label_points(ax, [1, 2], [3, 1], ['A', 'B'])
-    ps.label_scatter(ax, [4, 5], [4, 5], ['C', 'D'], note=True)
+    ft.label_points(ax, [1, 2], [3, 1], ['A', 'B'])
+    ft.label_scatter(ax, [4, 5], [4, 5], ['C', 'D'], note=True)
     p = panel(fig)
     assert [s['kind'] for s in p['series']] == ['points'] and p['series'][0]['x'] == [1, 2, 3]
     assert [(q['text'], q['x'], q['y']) for q in p['points']] == [
@@ -173,9 +173,9 @@ def test_scatter_labelled_points_and_notes():
 
 def test_key_entries_name_unlabelled_series_by_colour():
     fig, ax = plt.subplots()
-    ax.plot([1, 2], [1, 2], color=ps.PALETTE[0])
-    ax.plot([1, 2], [2, 1], color=ps.PALETTE[1])
-    ps.key(ax, [('first', ps.PALETTE[0]), ('second', ps.PALETTE[1])])
+    ax.plot([1, 2], [1, 2], color=ft.PALETTE[0])
+    ax.plot([1, 2], [2, 1], color=ft.PALETTE[1])
+    ft.key(ax, [('first', ft.PALETTE[0]), ('second', ft.PALETTE[1])])
     p = panel(fig)
     assert [s['label'] for s in p['series']] == ['first', 'second']
     assert all(s['named_by'] == 'key' for s in p['series'])
@@ -199,10 +199,10 @@ def test_text_inside_offset_boxes_is_read_line_by_line():
         return HPacker(children=[TextArea(t, textprops={'color': c}) for t, c in parts],
                        pad=0, sep=0, align='baseline')
     fig, ax = plt.subplots()
-    ax.scatter([1, 2], [1, 2], color=ps.PALETTE[0])
-    rows = [row([('●  ', ps.PALETTE[0]), ('observed', ps.PALETTE[0])]),
-            row([('without the ', ps.GREY['text']), ('workers', ps.PALETTE[1]),
-                 (' term', ps.GREY['text'])])]
+    ax.scatter([1, 2], [1, 2], color=ft.PALETTE[0])
+    rows = [row([('●  ', ft.PALETTE[0]), ('observed', ft.PALETTE[0])]),
+            row([('without the ', ft.GREY['text']), ('workers', ft.PALETTE[1]),
+                 (' term', ft.GREY['text'])])]
     ax.add_artist(AnchoredOffsetbox(loc='upper left', frameon=False,
                                     child=VPacker(children=rows, align='left', pad=0, sep=4)))
     ax.add_artist(AnchoredText('source: INE', loc='lower right'))
@@ -210,7 +210,7 @@ def test_text_inside_offset_boxes_is_read_line_by_line():
                                  boxcoords='offset points'))
     d = digest.describe(fig)
     p = d['panels'][0]
-    grey, first, second = (digest._color(c) for c in (ps.GREY['text'], *ps.PALETTE[:2]))
+    grey, first, second = (digest._color(c) for c in (ft.GREY['text'], *ft.PALETTE[:2]))
     assert p['notes'][:2] == [
         {'text': '● observed', 'color': first},
         {'text': 'without the workers term',
@@ -267,7 +267,7 @@ def test_log_scales_and_guides_are_marked():
     fig, ax = plt.subplots()
     ax.plot([1, 10, 100], [1, 2, 3], label='s')
     ax.set_xscale('log')
-    ps.guide(ax, [1, 100], [1, 3])
+    ft.guide(ax, [1, 100], [1, 3])
     p = panel(fig)
     assert p['xscale'] == 'log'
     assert [s.get('role') for s in p['series']] == [None, 'guide']
@@ -320,8 +320,8 @@ def test_a_long_digest_is_split_across_pdf_entries(monkeypatch):
 def test_save_writes_pdfs_that_carry_the_digest(tmp_path):
     fig, ax = plt.subplots()
     ax.plot([1, 2], [1, 2], label='s')
-    ps.label_lines(ax)
-    written = ps.save(fig, tmp_path / 'fig')
+    ft.label_lines(ax)
+    written = ft.save(fig, tmp_path / 'fig')
     assert len(written) == 2
     for path in written:
         assert digest.from_pdf(path.read_bytes())['panels'][0]['series'][0]['label'] == 's'
@@ -330,7 +330,7 @@ def test_save_writes_pdfs_that_carry_the_digest(tmp_path):
 def test_figure_command_prints_what_an_image_carries(tmp_path, capsys):
     fig, ax = plt.subplots()
     ax.plot([1, 2], [3, 4], label='s')
-    ps.save(fig, tmp_path / 'fig', targets=('paper',))
+    ft.save(fig, tmp_path / 'fig', targets=('paper',))
     assert digest.main(['figure', str(tmp_path / 'fig.pdf')]) == 0
     out = capsys.readouterr().out
     assert out.startswith('### fig\n') and '| x | s |' in out
@@ -395,14 +395,14 @@ def test_setup_arms_the_notebook_formatters_once():
         set_matplotlib_formats('png', 'pdf')
         import matplotlib.pyplot as plt
         from matplotlib.figure import Figure
-        import plotsmith as ps
-        from plotsmith import digest
-        ps.setup()
+        import figtools as ft
+        from figtools import digest
+        ft.setup()
         fmts = ip.display_formatter.formatters
         first = fmts['image/png'].lookup_by_type(Figure)
-        assert getattr(first, '_plotsmith_digest', False)
-        assert getattr(fmts['application/pdf'].lookup_by_type(Figure), '_plotsmith_digest', False)
-        ps.setup()
+        assert getattr(first, '_figtools_digest', False)
+        assert getattr(fmts['application/pdf'].lookup_by_type(Figure), '_figtools_digest', False)
+        ft.setup()
         assert fmts['image/png'].lookup_by_type(Figure) is first
         fig, ax = plt.subplots()
         ax.plot([1, 2], [3, 4], label='s')
@@ -422,7 +422,7 @@ def test_markdown_merges_series_on_a_shared_x_and_thins_large_tables():
     ax.plot(x, x, label='a')
     ax.plot(x, [2 * v for v in x], label='b')
     ax.plot([0, 1], [5, 6], label='c')
-    ps.refline(ax, 1, 'one')
+    ft.refline(ax, 1, 'one')
     ax.annotate('peak', xy=(2, 0.123456))
     text = '\n'.join(digest.markdown(digest.describe(fig), 'fig-t', 'A caption.', 'fig-t'))
     assert text.startswith('### fig-t. A caption.')
@@ -437,7 +437,7 @@ def test_markdown_merges_series_on_a_shared_x_and_thins_large_tables():
 def test_csv_rows_cover_series_rules_and_bars():
     fig, ax = plt.subplots()
     ax.plot([1, 2], [3, 4], label='s')
-    ps.refline(ax, 3.5, 'mid')
+    ft.refline(ax, 3.5, 'mid')
     ax.bar([1], [2])
     rows = digest.csv_rows(digest.describe(fig))
     assert rows[0][:4] == ('panel', 'series', 'kind', 'x')

@@ -19,8 +19,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import polars as pl
 
-import plotsmith as ps
-from plotsmith.digest import describe
+import figtools as ft
+from figtools.digest import describe
 
 RNG = np.random.default_rng(7)
 N = 400
@@ -41,16 +41,16 @@ def _draw(columns):
     fig, axes = plt.subplots(1, 4, figsize=(12, 3))
     head = {k: v[:12] for k, v in columns.items()}
     axes[0].plot(head['year'], head['x'], label='series')
-    ps.band(axes[0], head['year'], head['lo'], head['hi'])
-    ps.pointrange(axes[1], head['year'], head['x'], head['lo'], head['hi'])
-    ps.dotplot(axes[2], head['name'], head['x'], ci=(head['lo'], head['hi']))
-    slope = ps.binscatter(axes[3], columns['x'], columns['y'],
+    ft.band(axes[0], head['year'], head['lo'], head['hi'])
+    ft.pointrange(axes[1], head['year'], head['x'], head['lo'], head['hi'])
+    ft.dotplot(axes[2], head['name'], head['x'], ci=(head['lo'], head['hi']))
+    slope = ft.binscatter(axes[3], columns['x'], columns['y'],
                           controls=columns['c'])[2]
     return fig, slope
 
 
 def test_polars_columns_draw_the_same_figure_as_numpy_arrays():
-    ps.setup()
+    ft.setup()
     polars_fig, polars_slope = _draw({k: FRAME[k] for k in FRAME.columns})
     numpy_fig, numpy_slope = _draw({k: FRAME[k].to_numpy() for k in FRAME.columns})
     assert polars_slope == numpy_slope
@@ -59,10 +59,10 @@ def test_polars_columns_draw_the_same_figure_as_numpy_arrays():
 
 
 def test_label_scatter_takes_polars_names():
-    ps.setup()
+    ft.setup()
     fig, ax = plt.subplots()
     head = FRAME.head(8)
-    ps.label_scatter(ax, head['x'], head['y'], head['name'])
+    ft.label_scatter(ax, head['x'], head['y'], head['name'])
     texts = sorted(t.get_text() for t in ax.texts)
     assert texts == sorted(head['name'].to_list())
     plt.close(fig)
@@ -72,7 +72,7 @@ def test_a_polars_null_is_a_missing_value():
     y = FRAME['y'].scatter(3, None)
     fig, ax = plt.subplots()
     with pytest.raises(ValueError, match='non-finite'):
-        ps.binscatter(ax, FRAME['x'], y)
+        ft.binscatter(ax, FRAME['x'], y)
     plt.close(fig)
 
 
@@ -85,15 +85,15 @@ def test_group_by_iteration_in_the_guide_keeps_the_sort():
 
 
 def _module(*args):
-    return subprocess.run([sys.executable, '-m', 'plotsmith', *args],
+    return subprocess.run([sys.executable, '-m', 'figtools', *args],
                           capture_output=True)
 
 
 def test_the_module_prints_the_guide_and_the_readme():
     guide = _module()
     assert guide.returncode == 0
-    assert guide.stdout.decode('utf-8').startswith('# plotsmith: how to use it')
+    assert guide.stdout.decode('utf-8').startswith('# figtools: how to use it')
     readme = _module('readme')
     assert readme.returncode == 0
-    assert readme.stdout.decode('utf-8').lstrip().startswith('# plotsmith\n')
+    assert readme.stdout.decode('utf-8').lstrip().startswith('# figtools\n')
     assert _module('nonsense').returncode != 0

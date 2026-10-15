@@ -8,7 +8,7 @@ import pytest
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-import plotsmith.check as fc
+import figtools.check as fc
 
 
 @pytest.fixture(autouse=True)
@@ -37,14 +37,14 @@ fig-width: 9 here is prose, not front matter, and must not run.
 # %% setup
 #| echo: false
 import matplotlib.pyplot as plt
-import plotsmith as ps
-ps.setup()
+import figtools as ft
+ft.setup()
 
 # %%
 if __name__ == '__main__':
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1], label='a')
-    ps.label_lines(ax)
+    ft.label_lines(ax)
 '''
 
 QMD = '''---
@@ -53,11 +53,11 @@ fig-width: 5
 
 ```{python}
 import matplotlib.pyplot as plt
-import plotsmith as ps
-ps.setup()
+import figtools as ft
+ft.setup()
 fig, ax = plt.subplots()
 ax.plot([0, 1], [0, 1], label='a')
-ps.label_lines(ax)
+ft.label_lines(ax)
 ```
 '''
 
@@ -98,8 +98,8 @@ def test_figsize_falls_to_quartos_html_default(tmp_path):
 
 def test_check_reports_a_failed_inline_assert_instead_of_dying(tmp_path):
     doc = tmp_path / 'doc.qmd'
-    doc.write_text(QMD.replace('ps.label_lines(ax)',
-                               'ps.label_lines(ax)\nassert False'),
+    doc.write_text(QMD.replace('ft.label_lines(ax)',
+                               'ft.label_lines(ax)\nassert False'),
                    encoding='utf-8')
     _, found = fc.check(doc)
     assert any('assert' in line for line in found)
@@ -111,7 +111,7 @@ def test_check_lets_a_cell_read_the_source_of_its_functions(tmp_path):
     from a string with no source registered, the same cell got an error or,
     worse, lines of whatever file was running at that line number."""
     doc = tmp_path / 'doc.qmd'
-    doc.write_text(QMD.replace('ps.setup()', 'ps.setup()\nimport inspect\n'
+    doc.write_text(QMD.replace('ft.setup()', 'ft.setup()\nimport inspect\n'
                                'def step():\n    return 1\n'
                                "if inspect.getsource(step) != 'def step():\\n    return 1\\n':\n"
                                "    raise RuntimeError('read the wrong source')"),
@@ -120,7 +120,7 @@ def test_check_lets_a_cell_read_the_source_of_its_functions(tmp_path):
     assert (n, found) == (1, [])
 
 
-READS_DATA = QMD.replace('ps.setup()', "ps.setup()\nopen('data.txt').read()")
+READS_DATA = QMD.replace('ft.setup()', "ft.setup()\nopen('data.txt').read()")
 
 
 def test_check_runs_a_document_in_its_own_folder(tmp_path, monkeypatch):
@@ -198,11 +198,11 @@ def test_check_runs_an_ipynb_and_skips_magics(tmp_path):
         {'cell_type': 'code', 'source': [
             '%config InlineBackend.figure_format = "retina"\n',
             'import matplotlib.pyplot as plt\n',
-            'import plotsmith as ps\n',
-            'ps.setup()\n',
+            'import figtools as ft\n',
+            'ft.setup()\n',
             'fig, ax = plt.subplots()\n',
             "ax.plot([0, 1], [0, 1], label='a')\n",
-            'ps.label_lines(ax)\n',
+            'ft.label_lines(ax)\n',
         ]},
     ], 'nbformat': 4}
     doc = tmp_path / 'doc.ipynb'

@@ -5,7 +5,7 @@ another label still renders and still raises nothing, so it survives until
 somebody looks at the picture. This runs a document's code the way its
 renderer would (the `# %%` cells of a percent-format .py, the python chunks
 of a .qmd, the code cells of a .ipynb) and measures each figure it produces
-with `plotsmith.collisions`, which is quicker than rendering and reading, and
+with `figtools.collisions`, which is quicker than rendering and reading, and
 does not depend on noticing.
 
     uv run fig-check code
@@ -44,8 +44,8 @@ import yaml
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from plotsmith import collisions
-from plotsmith.digest import KEY, describe, encode
+from figtools import collisions
+from figtools.digest import KEY, describe, encode
 
 CHUNK = re.compile(r'^```\{python\}\s*$(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 FRONT = re.compile(r'\A\s*---\s*\n(.*?)\n---\s*$', re.DOTALL | re.MULTILINE)
@@ -320,7 +320,7 @@ def main(argv=None):
     # process accumulates into a MemoryError none of them hits alone.
     bad = 0
     for doc in targets:
-        cmd = [sys.executable, '-m', 'plotsmith.check', '--worker',
+        cmd = [sys.executable, '-m', 'figtools.check', '--worker',
                str(docs), doc.stem]
         if a.figs:
             cmd += ['--figs', str(a.figs)]

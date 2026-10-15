@@ -1,4 +1,4 @@
-# plotsmith
+# figtools
 
 Matplotlib figure style for research documents, inspired by Kieran Healy's
 *Data Visualization*: Tol vibrant palette in fixed order, direct
@@ -9,38 +9,38 @@ marks), annotated reference lines and bands, Cleveland dot plots over bars,
 and a measurable check that no label sits on a line, a marker, or another
 label.
 
-![Two panels drawn with plotsmith: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](docs/readme_figure.png)
+![Two panels drawn with figtools: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](docs/readme_figure.png)
 
 *Synthetic data, drawn by [docs/readme_figure.py](docs/readme_figure.py).*
 
 ## Install
 
 ```
-uv add git+https://github.com/fqueiro/plotsmith
+uv add git+https://github.com/fqueiro/figtools
 ```
 
-or `pip install git+https://github.com/fqueiro/plotsmith`. Requires Python
+or `pip install git+https://github.com/fqueiro/figtools`. Requires Python
 3.11 or later. A uv project pins the commit it resolved in its `uv.lock`, so
 the library can evolve without silently changing the figures of a finished
 paper; upgrade a project deliberately with
-`uv lock --upgrade-package plotsmith`.
+`uv lock --upgrade-package figtools`.
 
 ## Use
 
 ```python
-import plotsmith as ps
+import figtools as ft
 
-ps.setup()                      # once per document; base=11 by default
+ft.setup()                      # once per document; base=11 by default
 fig, ax = plt.subplots()
 ax.plot(years, portugal, label='Portugal')
 ax.plot(years, north, label='North')
-ps.band(ax, years, lo, hi)      # CI ribbon, inherits the line's colour
-ps.refline(ax, 1, 'parity')
-ps.label_lines(ax)              # direct labels replace the legend
-ps.save(fig, '../results/figures/fig1')
+ft.band(ax, years, lo, hi)      # CI ribbon, inherits the line's colour
+ft.refline(ax, 1, 'parity')
+ft.label_lines(ax)              # direct labels replace the legend
+ft.save(fig, '../results/figures/fig1')
 ```
 
-`python -m plotsmith` prints a short usage guide; `help(ps.<function>)`
+`python -m figtools` prints a short usage guide; `help(ft.<function>)`
 gives each function's full reference.
 
 `setup` also turns on matplotlib's constrained layout. The direct labels
@@ -76,7 +76,7 @@ of the data takes the headroom its label needs; a limit set by hand states
 its reason in a comment. And **a captioned figure cell produces the figure
 and nothing else**: in a Quarto or Jupyter document the cell's last
 statement is displayed if it is an expression, so a cell ending on a bare
-`ps.key(...)`, `ps.dotplot(...)` or `ax.set_xlabel(...)` shows that call's
+`ft.key(...)`, `ft.dotplot(...)` or `ax.set_xlabel(...)` shows that call's
 return value as a second output, and Quarto then numbers the pair as
 subfigures (a) and (b), giving the caption to the repr and leaving the
 figure captionless. End such a cell with `plt.show()`, which returns
@@ -121,7 +121,7 @@ project's `_quarto.yml`, any `_metadata.yml`, and the document's front
 matter, with 7 by 5 inches when none sets them. A name that matches no
 document, or a folder with none, is an error rather than a clean exit. The
 library itself has no document-format dependence, so plain scripts check
-their own figures inline with `assert not ps.collisions(fig)`.
+their own figures inline with `assert not ft.collisions(fig)`.
 
 ## Digest
 
@@ -143,7 +143,7 @@ its tables and printed output. In a project's `_quarto.yml`:
 
 ```yaml
 project:
-  post-render: python -m plotsmith.digest post-render
+  post-render: python -m figtools.digest post-render
 ```
 
 writes, for each rendered document, a folder under

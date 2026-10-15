@@ -9,7 +9,7 @@ read.
 
 Mechanism. `install()` (run by `setup()` in a notebook kernel) wraps the
 formatters IPython uses to turn a figure into its PNG or PDF, so the image
-carries the digest under the key `plotsmith-digest`: a compressed text chunk
+carries the digest under the key `figtools-digest`: a compressed text chunk
 in a PNG, an entry of the document information dictionary in a PDF, split
 into pieces under 32 kB where a reader may cap a string. `save` writes the
 same entry into the PDFs it exports for a paper. The image is otherwise
@@ -67,9 +67,9 @@ import matplotlib.dates as mdates
 import matplotlib.offsetbox
 import numpy as np
 
-from plotsmith import GREY
+from figtools import GREY
 
-KEY = 'plotsmith-digest'
+KEY = 'figtools-digest'
 VERSION = 1
 CACHE_ROOT = Path.home() / '.local' / 'share' / 'render-digests'
 SERIES_CAP = 5000   # points kept per series in a digest; longer ones are thinned evenly
@@ -695,7 +695,7 @@ def _wrap_formatter(registry, kind):
         current = registry.lookup_by_type(Figure)
     except KeyError:
         return False
-    if getattr(current, '_plotsmith_digest', False):
+    if getattr(current, '_figtools_digest', False):
         return True
     func = getattr(current, 'func', current)
     keywords = dict(getattr(current, 'keywords', None) or {})
@@ -708,7 +708,7 @@ def _wrap_formatter(registry, kind):
         with _quiet_pdf_metadata(), _keep_layout(fig):
             return func(fig, metadata=meta, **kw)
 
-    with_digest._plotsmith_digest = True
+    with_digest._figtools_digest = True
     registry.for_type(Figure, with_digest)
     return True
 
@@ -743,7 +743,7 @@ def install():
     done = [_wrap_formatter(formatters['image/png'], 'png'),
             _wrap_formatter(formatters['application/pdf'], 'pdf')]
     if not any(done):
-        warnings.warn('plotsmith.digest: figures are displayed as neither PNG nor PDF '
+        warnings.warn('figtools.digest: figures are displayed as neither PNG nor PDF '
                       '(fig-format svg?), so they will carry no digest', stacklevel=2)
         return False
     return True
@@ -1277,7 +1277,7 @@ def extract(html, out, source=None, root=None):
             if d is None:
                 lines += [f'### {label}' + (f'. {caption}' if caption else ''), '',
                           (f'No digest in this image (the figure was made without '
-                           f'plotsmith.setup running); see {name}.{ext}.'), '']
+                           f'figtools.setup running); see {name}.{ext}.'), '']
                 figures.append({'label': label, 'files': [f'{name}.{ext}'], 'digest': False})
                 continue
             lines += markdown(d, label, caption, name, outer, ext)
@@ -1327,7 +1327,7 @@ def extract_pdf(pdf, out, source=None, root=None):
 SPLIT_ADVICE = (
     'A captioned figure cell produces the figure and nothing else. The cell\'s '
     'last statement is displayed when it is an expression, so end it with '
-    'plt.show() rather than a bare ps.key(...), ps.dotplot(...) or '
+    'plt.show() rather than a bare ft.key(...), ft.dotplot(...) or '
     'ax.set_xlabel(...), and give a table a cell of its own. README.md carries '
     'the rule beside the other house rules.')
 
