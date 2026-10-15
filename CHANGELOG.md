@@ -4,6 +4,12 @@ Each release lists first the changes that alter how a figure is drawn, so
 that a project can tell whether upgrading will change its figures, and then
 the steps to upgrade.
 
+## Unreleased
+
+- The README's passage on coding agents says what looking at a figure costs
+  an agent (time, tokens, missed overlaps, approximate values, verdicts
+  that vary) rather than that an agent cannot look at all.
+
 ## 0.8.2 (2026-10-15)
 
 Documentation only: the README says how figtools serves coding agents, and

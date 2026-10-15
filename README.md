@@ -26,9 +26,10 @@ It does four things:
   plotted point, a scatter's raw observations included, so for
   confidential data turn it off with `ft.setup(digest=False)`.
 
-These make figtools suited to coding agents, which cannot judge a figure by
-looking at it: the check gives an agent a pass or fail to work towards, and
-the digest lets it read the values a figure shows
+These make figtools suited to coding agents. An agent can look at a
+rendered figure, but each look is costly, approximate and not always the
+same; the check gives it an exact pass or fail to work towards, and the
+digest the exact values a figure shows
 ([more below](https://github.com/fqueiro/figtools#working-with-coding-agents)).
 
 ![Two panels drawn with figtools: four employment series labelled at their line ends, and a coefficient dot plot with confidence intervals and a named zero rule](https://raw.githubusercontent.com/fqueiro/figtools/main/docs/readme_figure.png)
@@ -256,8 +257,11 @@ the digest; call `setup()` again after it.
 
 ## Working with coding agents
 
-A coding agent writing figure code cannot reliably judge a figure by
-looking at it. figtools gives it what it needs instead:
+A coding agent can look at a rendered figure, but each look costs time and
+tokens, can miss a small overlap, reads values only approximately, and may
+not give the same verdict twice. figtools gives it exact, repeatable
+answers instead, and leaves looking for what no check measures, such as
+whether a figure reads well:
 
 - `python -m figtools` prints a short usage guide matching the installed
   version, written to be read before writing figure code. One line in a
@@ -269,11 +273,11 @@ looking at it. figtools gives it what it needs instead:
 
 - `collisions`, `save` and `fig-check` turn "is this figure readable?" into
   a check with an exit code, so an agent fixes overlaps until the check
-  passes rather than judging a rendered image.
+  passes, without looking at the figure after every change.
 - The digest lets an agent read the numbers a figure shows, from a saved
   PDF (`render-digest figure`) or from a render's `outputs.md`, so the prose
-  it writes about a figure rests on the figure's values rather than on a
-  guess from its pixels.
+  it writes about a figure rests on the figure's values rather than on
+  values read off its pixels.
 - Errors name the function and the fix, which an agent can act on
   directly.
 
