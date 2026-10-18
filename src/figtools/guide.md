@@ -107,6 +107,12 @@ Regression coefficients:
   width; `targets=('poster',)` writes only the targets named, and must
   name every target `widths` gives. Include the PDFs in LaTeX with no
   `width=`: they already have their final size.
+- Each PDF carries a fingerprint of what drew it (the figure, the
+  rcParams, the fonts, the matplotlib and figtools versions, the target,
+  its width and the digest choice), and `save` leaves a PDF whose
+  fingerprint matches as it is, so rerunning a document writes only the
+  figures that changed. A figure that cannot be pickled, as one with a
+  lambda tick formatter, is written every time: pass a named function.
 - The drawing helpers return what they drew in a list, for restyling:
   `rule, label = ft.refline(ax, 0, 'zero')`,
   `stems, dots = ft.dotplot(ax, names, est)`,

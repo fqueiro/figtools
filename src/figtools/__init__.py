@@ -89,8 +89,12 @@ files.
 """
 
 import contextlib
+import hashlib
 import importlib.metadata
+import io
+import json
 import pickle
+import re
 import warnings
 from functools import partial
 from itertools import combinations, pairwise
@@ -100,7 +104,7 @@ from typing import NamedTuple
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.transforms import Bbox
+from matplotlib.transforms import Bbox, TransformNode
 from numpy.typing import ArrayLike
 
 __all__ = [
@@ -2314,6 +2318,86 @@ def _image_suffixes():
     return {f'.{t.lower()}' for t in types} - {'.pdf'}
 
 
+# The key under which each PDF `save` writes carries the fingerprint of what
+# it was drawn from, in its document information; a later `save` that would
+# draw the same thing finds the file current and leaves it as it is.
+_FINGERPRINT_KEY = 'figtools-fingerprint'
+_FINGERPRINT_ENTRY = re.compile(rb'/' + _FINGERPRINT_KEY.encode() + rb'\s*\(([0-9a-f]{64})\)')
+
+# A fixed protocol, so the pickle's bytes do not move with the default of the
+# Python running the document.
+_PICKLE_PROTOCOL = 5
+
+
+class _CanonicalPickler(pickle.Pickler):
+    """Pickles a figure to the same bytes in every process that draws it.
+
+    A transform keeps `_parents`, the transforms to invalidate when it
+    changes, keyed by their memory addresses: bookkeeping for redrawing that
+    says nothing about the picture, and the only part of a figure's pickle
+    that differs between two runs of the same code. It goes out empty.
+    """
+
+    def reducer_override(self, obj):
+        if isinstance(obj, TransformNode):
+            reduced = obj.__reduce_ex__(_PICKLE_PROTOCOL)
+            if len(reduced) > 2 and isinstance(reduced[2], dict) and '_parents' in reduced[2]:
+                return (*reduced[:2], {**reduced[2], '_parents': {}}, *reduced[3:])
+        return NotImplemented
+
+
+def _figure_fingerprint(fig):
+    """The sha256 of the figure's canonical pickle: every artist, data
+    array, colour, font setting and size it holds. None for a figure that
+    does not pickle, as one with a lambda tick formatter, which `save` then
+    writes every time.
+    """
+    buffer = io.BytesIO()
+    try:
+        _CanonicalPickler(buffer, protocol=_PICKLE_PROTOCOL).dump(fig)
+    except (pickle.PicklingError, TypeError, AttributeError):
+        return None
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def _write_context():
+    """What a PDF depends on besides the figure, as text: the rcParams, which
+    savefig and the PDF backend read as they write (the interactive
+    backend's name left out, since it only says where figures show, and it
+    differs between a notebook and a script); the fonts matplotlib can find;
+    and the versions of the code that draws and writes.
+    """
+    from matplotlib import font_manager
+    fonts = font_manager.fontManager
+    return json.dumps({
+        'rc': sorted((k, repr(v)) for k, v in mpl.rcParams.items()
+                     if k not in ('backend', 'backend_fallback')),
+        'fonts': sorted((f.fname, f.name, f.style, str(f.weight), str(f.stretch), f.variant)
+                        for f in fonts.ttflist + fonts.afmlist),
+        'matplotlib': mpl.__version__,
+        'figtools': __version__,
+    })
+
+
+def _pdf_key(fingerprint, context, target, width, embed):
+    """The fingerprint one PDF carries: the figure's, with everything else
+    that decides the file's bytes."""
+    fields = [fingerprint, context, target, width, embed]
+    return hashlib.sha256(json.dumps(fields).encode()).hexdigest()
+
+
+def _stored_key(pdf):
+    """The fingerprint a PDF written by `save` carries, or None: for a file
+    that is missing, was written another way, or carries the key more than
+    once, none of which can be taken as current."""
+    try:
+        data = pdf.read_bytes()
+    except FileNotFoundError:
+        return None
+    found = _FINGERPRINT_ENTRY.findall(data)
+    return found[0].decode('ascii') if len(found) == 1 else None
+
+
 def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     """Write `path`.pdf for the paper and `path`_<target>.pdf for the rest.
 
@@ -2349,9 +2433,22 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     `path`.pkl, stamped with this figtools version; `load` reopens it for
     hand-adjustment without rerunning the analysis.
 
-    Returns the paths written. Under `fig-check`, `save` measures the figure
-    at each size and raises as usual but writes nothing, returning the paths
-    it would have written, so a check leaves a document's files as they were.
+    Each PDF carries a fingerprint of what it was drawn from, in its
+    document information: the figure itself (its pickle, every artist,
+    value, colour, font setting and size in it), the rcParams, the fonts
+    matplotlib can find, the matplotlib and figtools versions, the target,
+    its width and the digest choice. A PDF whose fingerprint equals the one
+    this call would write is current, and is left as it is, neither checked
+    again nor rewritten, so rerunning a document writes only the figures
+    that changed. A figure that cannot be pickled, as one with a lambda
+    tick formatter, has no fingerprint and is written every time; a named
+    function in place of the lambda gives it one. A font file replaced on
+    disk under the same name is the one change the fingerprint misses.
+
+    Returns the paths of the PDFs, written now or found current, and of the
+    pickle. Under `fig-check`, `save` measures the figure at each size and
+    raises as usual but writes nothing, returning the paths it would have
+    written, so a check leaves a document's files as they were.
     """
     from . import digest as _digest
     if digest is not None and not isinstance(digest, bool):
@@ -2393,10 +2490,24 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                          f'targets out to write paper, slides and every '
                          f'target widths names')
     w0, h0 = fig.get_size_inches()
+    # Taken before any resizing, from the figure as the document left it; a
+    # check writes nothing, so it has no use for one.
+    fingerprint = None if _checking else _figure_fingerprint(fig)
+    context = _write_context() if fingerprint else None
     written = []
+    resized = False
     try:
         for t in targets:
             w = sizes[t]
+            out = path.with_name(
+                path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
+            key = _pdf_key(fingerprint, context, t, w, embed) if fingerprint else None
+            if key and _stored_key(out) == key:
+                # Drawn from this same figure at this size, and checked
+                # then: drawing and checking it again would give the same.
+                written.append(out)
+                continue
+            resized = True
             fig.set_size_inches(w, w * h0 / w0)
             hits = collisions(fig)  # draws first, so placement re-solves
             if hits:
@@ -2405,13 +2516,13 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                 raise RuntimeError(f'save: labels overlap or text runs off '
                                    f'the figure at the {t} size, nothing '
                                    f'written for it:\n{what}')
-            out = path.with_name(
-                path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
             if _checking:
                 written.append(out)
                 continue
             meta = (_digest.pdf_metadata(_digest.describe(fig)) if embed
                     else {})
+            if key:
+                meta[_FINGERPRINT_KEY] = key
             # The whole figure, not the tight box `setup` sets for other
             # saves: that box crops to the drawn content and pads it, so
             # each file would miss its target width by its own amount.
@@ -2424,8 +2535,11 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                 fig.savefig(out, metadata=meta)
             written.append(out)
     finally:
-        fig.set_size_inches(w0, h0)
-        fig.canvas.draw()
+        # A figure every target found current was never resized or drawn
+        # here, and is left as the document handed it over.
+        if resized:
+            fig.set_size_inches(w0, h0)
+            fig.canvas.draw()
     if retouch and _checking:
         written.append(path.with_name(path.name + '.pkl'))
     elif retouch:

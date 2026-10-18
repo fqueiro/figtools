@@ -6,6 +6,17 @@ the steps to upgrade.
 
 ## Unreleased
 
+- `save` leaves a PDF as it is when the figure, the rcParams, the fonts,
+  the versions, the target, its width and the digest choice are those it
+  was written from, which a fingerprint in its document information
+  records; rerunning a document then writes only the figures that
+  changed (17 unchanged figures: about 16 s of saving down to under 1 s).
+  The PDFs `save` writes gain that one entry. A figure whose files are all
+  current is not redrawn at the end of `save`, so its on-screen rendering
+  can differ from one drawn after writing by antialiasing noise at the
+  edges of lines, sub-pixel and invisible; positions, values and labels
+  are the same. A figure that cannot be pickled is written every time, as
+  before.
 - The README's passage on coding agents says what looking at a figure costs
   an agent (time, tokens, missed overlaps, approximate values, verdicts
   that vary) rather than that an agent cannot look at all.

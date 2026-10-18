@@ -14,6 +14,8 @@ other, since a detector that never fires would pass a chart full of overlaps.
 import importlib.metadata
 import pickle
 import re
+import subprocess
+import sys
 import warnings
 from itertools import pairwise
 
@@ -1559,6 +1561,122 @@ def test_setup_and_save_refuse_a_digest_that_is_not_true_or_false(tmp_path):
     with pytest.raises(TypeError, match='save: digest'):
         ft.save(fig, tmp_path / 'x', digest=0)
     plt.close(fig)
+
+
+# --- fingerprints: a current PDF is left as it is ---------------------------------
+
+def _labelled_figure(colour='#009988', size=None, lw=None, label='first',
+                     formatter=None):
+    """The same figure on every call with the same arguments, as a document
+    run again draws it."""
+    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    yr = np.arange(2000, 2020)
+    ax.plot(yr, np.linspace(1, 2, 20), color=colour, lw=lw, label=label)
+    ax.plot(yr, np.linspace(2, 1, 20), color='#0077BB', label='second')
+    ft.label_lines(ax)
+    if size is not None:
+        ax.set_xlabel('year', fontsize=size)
+    if formatter is not None:
+        ax.yaxis.set_major_formatter(formatter)
+    return fig
+
+
+def _saved(tmp_path, **kw):
+    """Save a freshly drawn figure to `tmp_path`/fig and return each PDF's
+    (fingerprint, modification time, bytes)."""
+    rc = kw.pop('rc', {})
+    save_kw = {k: kw.pop(k) for k in ('widths', 'targets') if k in kw}
+    fig = _labelled_figure(**kw)
+    with matplotlib.rc_context(rc):
+        paths = ft.save(fig, tmp_path / 'fig', **save_kw)
+    plt.close(fig)
+    return {p.name: (ft._stored_key(p), p.stat().st_mtime_ns, p.read_bytes())
+            for p in sorted(tmp_path.glob('fig*.pdf'))}, paths
+
+
+def test_save_leaves_the_pdfs_of_a_figure_drawn_again_as_they_are(tmp_path):
+    ft.setup()
+    first, paths = _saved(tmp_path)
+    assert all(key for key, _, _ in first.values())
+    again, paths_again = _saved(tmp_path)
+    assert again == first   # same fingerprint, untouched: time and bytes
+    assert [p.name for p in paths_again] == [p.name for p in paths]
+
+
+@pytest.mark.parametrize('change', [
+    {'colour': '#EE7733'}, {'size': 14}, {'lw': 2.5}, {'label': 'renamed'},
+    {'rc': {'pdf.fonttype': 42}},
+])
+def test_save_rewrites_the_pdfs_of_a_changed_figure(tmp_path, change):
+    """A change only of how the figure looks, or of a setting the PDF backend
+    reads as it writes, makes the files stale."""
+    ft.setup()
+    first, _ = _saved(tmp_path, **({'size': 10} if 'size' in change else {}))
+    changed, _ = _saved(tmp_path, **change)
+    for name in first:
+        assert changed[name][0] != first[name][0]
+        assert changed[name][1] != first[name][1]
+
+
+def test_save_rewrites_only_the_target_whose_width_changed(tmp_path):
+    ft.setup()
+    first, _ = _saved(tmp_path)
+    wider, _ = _saved(tmp_path, widths={'paper': 6.2})
+    assert wider['fig.pdf'][1] != first['fig.pdf'][1]
+    assert wider['fig_slides.pdf'] == first['fig_slides.pdf']
+
+
+def test_save_writes_a_missing_pdf_and_leaves_the_current_one(tmp_path):
+    ft.setup()
+    first, _ = _saved(tmp_path)
+    (tmp_path / 'fig_slides.pdf').unlink()
+    again, _ = _saved(tmp_path)
+    assert again['fig.pdf'] == first['fig.pdf']
+    assert again['fig_slides.pdf'][0] == first['fig_slides.pdf'][0]
+
+
+def test_save_rewrites_a_pdf_that_carries_no_fingerprint(tmp_path):
+    """A file written some other way under the same name is not taken as
+    current, whatever it holds."""
+    ft.setup()
+    fig = _labelled_figure()
+    fig.savefig(tmp_path / 'fig.pdf')
+    plt.close(fig)
+    assert ft._stored_key(tmp_path / 'fig.pdf') is None
+    saved, _ = _saved(tmp_path, targets=('paper',))
+    assert saved['fig.pdf'][0] is not None
+
+
+def test_a_figure_that_cannot_be_pickled_is_written_every_time(tmp_path):
+    ft.setup()
+    lambda_ticks = matplotlib.ticker.FuncFormatter(lambda v, _: f'{v:.1f}')
+    assert ft._figure_fingerprint(_labelled_figure(formatter=lambda_ticks)) is None
+    plt.close('all')
+    first, _ = _saved(tmp_path, formatter=lambda_ticks)
+    again, _ = _saved(tmp_path, formatter=lambda_ticks)
+    for name in first:
+        assert first[name][0] is None
+        assert again[name][1] != first[name][1]
+
+
+def test_the_fingerprint_is_the_same_in_two_fresh_processes():
+    """Memory addresses differ between processes; the canonical pickle
+    leaves out the one place a figure's pickle holds them."""
+    script = (
+        'import matplotlib; matplotlib.use("Agg")\n'
+        'import matplotlib.pyplot as plt, numpy as np, figtools as ft\n'
+        'ft.setup()\n'
+        'fig, ax = plt.subplots()\n'
+        'yr = np.arange(2000, 2020)\n'
+        'ax.plot(yr, np.linspace(1, 2, 20), label="a")\n'
+        'ax.plot(yr, np.linspace(2, 1, 20), label="b")\n'
+        'ft.label_lines(ax)\n'
+        'print(ft._figure_fingerprint(fig))\n'
+    )
+    runs = [subprocess.run([sys.executable, '-c', script], capture_output=True,
+                           text=True, check=True).stdout.strip() for _ in range(2)]
+    assert re.fullmatch('[0-9a-f]{64}', runs[0])
+    assert runs[0] == runs[1]
 
 
 def _matplotlib_linear_scale():
