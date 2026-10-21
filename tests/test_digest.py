@@ -878,6 +878,23 @@ def test_the_digest_of_a_project_that_moved_is_its_own(tmp_path):
     assert json.loads((out / 'manifest.json').read_text())['project_root'] == str(moved.resolve())
 
 
+def test_a_project_recorded_under_a_junction_at_its_former_path_is_itself(tmp_path):
+    """Dropbox moves its folder when the team is renamed and leaves a junction
+    at the former name, so the recorded root still holds a _quarto.yml.
+    Resolved, it is the project itself, and its digest clears."""
+    _winapi = pytest.importorskip('_winapi')
+    cache = tmp_path / 'cache'
+    sa = quarto_project(tmp_path / 'old' / 'proj', 'T')
+    out = digest.digest_dir(sa.parent, sa, cache)
+    digest.extract(sa.with_suffix('.html'), out, source=sa, root=sa.parent)
+    moved = (tmp_path / 'old').rename(tmp_path / 'new') / 'proj'
+    _winapi.CreateJunction(str(tmp_path / 'new'), str(tmp_path / 'old'))
+    src = moved / 'doc.qmd'
+    assert digest.check(src, cache=cache) == 0
+    digest.extract(src.with_suffix('.html'), out, source=src, root=moved)
+    assert json.loads((out / 'manifest.json').read_text())['project_root'] == str(moved.resolve())
+
+
 def test_the_digest_of_a_deleted_project_gives_way_to_its_namesake(tmp_path):
     """While another project of the same folder name exists, its digest is
     not this one's; once its folder holds no _quarto.yml, the digest is

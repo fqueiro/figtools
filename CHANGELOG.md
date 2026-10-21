@@ -4,6 +4,14 @@ Each release lists first the changes that alter how a figure is drawn, so
 that a project can tell whether upgrading will change its figures, and then
 the steps to upgrade.
 
+## Unreleased
+
+Nothing changes how a figure is drawn. A digest whose recorded project root
+is a junction to the current project, such as a folder's former name that
+Dropbox leaves behind when it moves the folder, is recognised as the
+project's own, and the next render replaces it; before, the render
+refused it as another project's.
+
 ## 0.9.0 (2026-10-19)
 
 `save` leaves a PDF that is already current as it is, so rerunning a

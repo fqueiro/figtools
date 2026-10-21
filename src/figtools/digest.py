@@ -1422,12 +1422,15 @@ def _other_project(theirs, ours):
     """Whether a manifest's project root `theirs` names a project other than
     `ours` that still exists.
 
-    Path equality ignores case on Windows, and `ours` comes resolved, which
-    collapses junctions, so one project reached by two routes matches
-    itself. A root that no longer holds a `_quarto.yml` belongs to a project
-    that moved or was deleted, and its digest is stale rather than another's.
+    Path equality ignores case on Windows, and both paths are compared
+    resolved, which collapses junctions. One project reached by two routes
+    therefore matches itself, including a root recorded under a folder's
+    former name that a junction still serves, as Dropbox leaves when it moves
+    its folder. A root that no longer holds a `_quarto.yml` belongs to a
+    project that moved or was deleted, and its digest is stale rather than
+    another's.
     """
-    return theirs is not None and Path(theirs) != Path(ours) and _is_project(theirs)
+    return theirs is not None and Path(theirs).resolve() != Path(ours) and _is_project(theirs)
 
 
 def _stamp(src, root, output):
