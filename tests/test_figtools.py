@@ -12,12 +12,17 @@ other, since a detector that never fires would pass a chart full of overlaps.
 """
 
 import importlib.metadata
+import inspect
+import json
+import linecache
 import pickle
 import re
+import runpy
 import subprocess
 import sys
 import warnings
 from itertools import pairwise
+from pathlib import Path
 
 import matplotlib
 import numpy as np
@@ -1677,6 +1682,202 @@ def test_the_fingerprint_is_the_same_in_two_fresh_processes():
                            text=True, check=True).stdout.strip() for _ in range(2)]
     assert re.fullmatch('[0-9a-f]{64}', runs[0])
     assert runs[0] == runs[1]
+
+
+# --- the source record: where in the code each PDF was saved from ------------
+
+_PDF_ESCAPES = {ord('n'): b'\n', ord('r'): b'\r', ord('\\'): b'\\',
+                ord('('): b'(', ord(')'): b')'}
+
+
+def _pdf_source(pdf):
+    """The `figtools-source` entry of a PDF, read from its raw bytes, or
+    None. matplotlib writes a metadata string as a PDF literal string,
+    ASCII as it is and anything else as UTF-16BE behind the byte-order mark
+    FE FF, escaping backslashes, parentheses, CR and LF with a backslash; so
+    the string ends at the first parenthesis not escaped."""
+    data = pdf.read_bytes()
+    starts = [m.end() for m in re.finditer(rb'/figtools-source\s*\(', data)]
+    if not starts:
+        return None
+    assert len(starts) == 1
+    out, i = bytearray(), starts[0]
+    while data[i] != ord(')'):
+        if data[i] == ord('\\'):
+            i += 1
+            out += _PDF_ESCAPES[data[i]]
+        else:
+            out.append(data[i])
+        i += 1
+    raw = bytes(out)
+    return (raw[2:].decode('utf-16-be') if raw.startswith(b'\xfe\xff')
+            else raw.decode('ascii'))
+
+
+def test_save_records_the_file_and_line_that_called_it(tmp_path):
+    ft.setup()
+    folder = tmp_path / 'figures'
+    folder.mkdir()
+    fig = _labelled_figure()
+    line = inspect.currentframe().f_lineno + 1
+    paths = ft.save(fig, folder / 'fig')
+    plt.close(fig)
+    for pdf in paths:
+        file, _, at = _pdf_source(pdf).rpartition(':')
+        assert int(at) == line
+        assert '\\' not in file
+        # Relative to the PDF's folder; absolute where the test file and the
+        # temporary folder lie on different drives, as on Windows CI.
+        assert (folder / file).resolve() == Path(__file__).resolve()
+
+
+def _run_script(script, out):
+    """Run `script` as Python runs a file, with a freshly drawn figure to
+    save to `out`."""
+    fig = _labelled_figure()
+    runpy.run_path(str(script), init_globals={'ft': ft, 'fig': fig, 'out': out})
+    plt.close(fig)
+
+
+def test_a_pdf_follows_its_script_but_not_the_line_of_the_call(tmp_path):
+    """Code moved within its file leaves a current PDF as it is, with the
+    line it recorded; a script moved or renamed writes it again."""
+    ft.setup()
+    code, figures = tmp_path / 'code', tmp_path / 'figures'
+    code.mkdir()
+    figures.mkdir()
+    script, pdf = code / 'make.py', figures / 'fig.pdf'
+    call = 'ft.save(fig, out, targets=("paper",))\n'
+    script.write_text(call)
+    _run_script(script, figures / 'fig')
+    assert _pdf_source(pdf) == '../code/make.py:1'
+    before = pdf.stat().st_mtime_ns, pdf.read_bytes()
+    script.write_text('\n\n\n' + call)
+    _run_script(script, figures / 'fig')
+    assert (pdf.stat().st_mtime_ns, pdf.read_bytes()) == before
+    renamed = script.rename(code / 'draw.py')
+    _run_script(renamed, figures / 'fig')
+    assert _pdf_source(pdf) == '../code/draw.py:4'
+
+
+def test_the_source_record_keeps_a_path_beyond_ascii(tmp_path):
+    ft.setup()
+    code, figures = tmp_path / 'código', tmp_path / 'figuras ção'
+    code.mkdir()
+    figures.mkdir()
+    script, pdf = code / 'make.py', figures / 'fig.pdf'
+    script.write_text('ft.save(fig, out, targets=("paper",))\n')
+    _run_script(script, figures / 'fig')
+    assert re.search(rb'/figtools-source\s*\(\xfe\xff', pdf.read_bytes())   # UTF-16BE
+    assert _pdf_source(pdf) == '../código/make.py:1'
+
+
+# A percent-format document, and one of its cells as a notebook kernel
+# receives it from Quarto: option lines kept, the cell well below the top.
+_DOCUMENT = '''\
+# %% [markdown]
+r"""
+---
+title: x
+jupyter: python3
+---
+"""
+
+# %%
+import figtools as ft
+
+# %%
+#| label: fig-x
+#| fig-cap: "A figure."
+
+ft.save(fig, out, targets=('paper',))
+'''
+_CELL = '''\
+#| label: fig-x
+#| fig-cap: "A figure."
+
+ft.save(fig, out, targets=('paper',))
+'''
+_SAVE_LINE = _DOCUMENT.splitlines().index("ft.save(fig, out, targets=('paper',))") + 1
+_QUARTO_NAMES = ('QUARTO_EXECUTE_INFO', 'QUARTO_DOCUMENT_PATH', 'QUARTO_DOCUMENT_FILE')
+
+
+def _run_cell(monkeypatch, tmp_path, out, cell=_CELL):
+    """Run `cell` as a notebook kernel runs one: compiled under the name of
+    a temporary file that does not exist, its source registered in
+    linecache with no modification time, as IPython registers it."""
+    name = str(tmp_path / 'ipykernel_1' / '2674709693.py')
+    monkeypatch.setitem(linecache.cache, name,
+                        (len(cell), None, cell.splitlines(keepends=True), name))
+    fig = _labelled_figure()
+    exec(compile(cell, name, 'exec'), {'ft': ft, 'fig': fig, 'out': out})
+    plt.close(fig)
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """A project holding `code/doc.py` and an empty `figures/`, in an
+    environment no Quarto render has set."""
+    for name in _QUARTO_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / 'code').mkdir()
+    (tmp_path / 'figures').mkdir()
+    (tmp_path / 'code' / 'doc.py').write_text(_DOCUMENT, encoding='utf-8')
+    ft.setup()
+    return tmp_path
+
+
+def test_a_cell_is_placed_in_the_document_of_the_working_directory(project, monkeypatch):
+    (project / 'code' / 'helpers.py').write_text('def f():\n    pass\n')
+    monkeypatch.chdir(project / 'code')
+    _run_cell(monkeypatch, project, project / 'figures' / 'fig')
+    assert _pdf_source(project / 'figures' / 'fig.pdf') == f'../code/doc.py:{_SAVE_LINE}'
+
+
+@pytest.mark.parametrize('render', ['info file', 'daemon', 'single file'])
+def test_a_cell_is_placed_in_the_document_quarto_names(project, monkeypatch, render):
+    """Quarto's name narrows the search to its document, so a copy of the
+    cell elsewhere does not make the record ambiguous. Under its kernel
+    daemon the info file is gone after the first render; a document outside
+    any project has a folder relative to where Quarto started, and runs in
+    its own folder."""
+    code = project / 'code'
+    (code / 'copy.py').write_text(_DOCUMENT, encoding='utf-8')
+    elsewhere = project / 'elsewhere'
+    elsewhere.mkdir()
+    (elsewhere / 'doc.py').write_text(_DOCUMENT, encoding='utf-8')
+    info = project / 'execute-info'
+    if render == 'info file':
+        info.write_text(json.dumps({'document-path': str(code / 'doc.py')}))
+    monkeypatch.setenv('QUARTO_EXECUTE_INFO', str(info))
+    monkeypatch.setenv('QUARTO_DOCUMENT_FILE', 'doc.py')
+    monkeypatch.setenv('QUARTO_DOCUMENT_PATH', 'code' if render == 'single file' else str(code))
+    monkeypatch.chdir(code if render == 'single file' else elsewhere)
+    _run_cell(monkeypatch, project, project / 'figures' / 'fig')
+    assert _pdf_source(project / 'figures' / 'fig.pdf') == f'../code/doc.py:{_SAVE_LINE}'
+
+
+@pytest.mark.parametrize('layout', ['in no document', 'in two documents',
+                                    'twice in one document', 'not in the named document'])
+def test_a_cell_placed_without_certainty_records_nothing(project, monkeypatch, layout):
+    code = project / 'code'
+    doc = code / 'doc.py'
+    if layout == 'in no document':
+        doc.write_text(_DOCUMENT.replace('#| label: fig-x', '#| label: fig-y'), encoding='utf-8')
+    elif layout == 'in two documents':
+        (code / 'copy.qmd').write_text(f'```{{python}}\n{_CELL}```\n', encoding='utf-8')
+    elif layout == 'twice in one document':
+        doc.write_text(_DOCUMENT + '\n# %%\n' + _CELL, encoding='utf-8')
+    else:
+        (code / 'other.py').write_text(_DOCUMENT, encoding='utf-8')
+        doc.write_text('', encoding='utf-8')
+        monkeypatch.setenv('QUARTO_DOCUMENT_PATH', str(code))
+        monkeypatch.setenv('QUARTO_DOCUMENT_FILE', 'doc.py')
+    monkeypatch.chdir(code)
+    _run_cell(monkeypatch, project, project / 'figures' / 'fig')
+    pdf = project / 'figures' / 'fig.pdf'
+    assert _pdf_source(pdf) is None
+    assert ft._stored_key(pdf) is not None   # written, with its fingerprint
 
 
 def _matplotlib_linear_scale():

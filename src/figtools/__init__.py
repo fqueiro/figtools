@@ -93,8 +93,11 @@ import hashlib
 import importlib.metadata
 import io
 import json
+import linecache
+import os
 import pickle
 import re
+import sys
 import warnings
 from functools import partial
 from itertools import combinations, pairwise
@@ -2379,10 +2382,11 @@ def _write_context():
     })
 
 
-def _pdf_key(fingerprint, context, target, width, embed):
+def _pdf_key(fingerprint, context, target, width, embed, source):
     """The fingerprint one PDF carries: the figure's, with everything else
-    that decides the file's bytes."""
-    fields = [fingerprint, context, target, width, embed]
+    that decides the file's bytes but the line of the call to `save`.
+    `source` is the calling file as the PDF records it, or None."""
+    fields = [fingerprint, context, target, width, embed, source]
     return hashlib.sha256(json.dumps(fields).encode()).hexdigest()
 
 
@@ -2396,6 +2400,126 @@ def _stored_key(pdf):
         return None
     found = _FINGERPRINT_ENTRY.findall(data)
     return found[0].decode('ascii') if len(found) == 1 else None
+
+
+# The key under which each PDF `save` writes where in the code it was
+# called, as `<file>:<line>`, so an editor can go from a figure in a paper
+# to the line that wrote it.
+_SOURCE_KEY = 'figtools-source'
+
+# What a notebook cell's code is looked for in when no Quarto render names
+# its document: the percent scripts and Quarto documents of the folder.
+_DOCUMENT_SUFFIXES = ('.py', '.qmd')
+
+
+def _in_package(frame):
+    """Whether a stack frame runs figtools' own code."""
+    name = frame.f_globals.get('__name__', '')
+    return name == __name__ or name.startswith(__name__ + '.')
+
+
+def _caller():
+    """The file and line that called `save`, from the first stack frame
+    outside figtools: an absolute path and a 1-based line, or None when they
+    cannot be known for certain, since a wrong record is worse than none.
+
+    A plain script or module is its own file. A notebook cell is compiled
+    from text under a temporary file's name, its lines counted from the top
+    of the cell, so its place is looked up in the document it came from
+    (`_cell_source`).
+    """
+    frame = sys._getframe(1)
+    while frame is not None and _in_package(frame):
+        frame = frame.f_back
+    if frame is None or frame.f_lineno is None:
+        return None
+    name, line = frame.f_code.co_filename, frame.f_lineno
+    entry = linecache.cache.get(name)
+    if entry is not None and len(entry) == 4 and entry[1] is None:
+        # Source registered as text with no modification time, as IPython
+        # registers each cell it runs, whether or not a file of that name
+        # exists: the debugger writes cells out under the same name.
+        return _cell_source(entry[2], line)
+    if os.path.isabs(name) and os.path.isfile(name):
+        return Path(name), line
+    return None
+
+
+def _source_lines(text):
+    """A file's lines as Python numbers them, which `str.splitlines` does
+    not: it also breaks at form feeds and other characters a string may
+    hold. Trailing whitespace is dropped, so that it decides no match."""
+    return [line.rstrip() for line in re.split(r'\r\n|\r|\n', text)]
+
+
+def _cell_documents():
+    """The files a notebook cell's code may come from.
+
+    Quarto names the document it renders in the kernel's environment.
+    `QUARTO_EXECUTE_INFO` is a file holding its absolute path, deleted at
+    the end of the render, while a kernel kept between renders (Quarto's
+    kernel daemon) keeps the environment of the render that started it, so
+    later renders find the file gone. `QUARTO_DOCUMENT_PATH` is the
+    document's folder, absolute when the document belongs to a project and
+    otherwise relative to the folder Quarto was started in, which the
+    kernel does not know; such a render runs its code in the document's
+    own folder. A kernel that Quarto did not start (VS Code's interactive
+    window, Jupyter) is searched for in the percent scripts and Quarto
+    documents of its working directory.
+    """
+    info = os.environ.get('QUARTO_EXECUTE_INFO')
+    if info:
+        try:
+            named = json.loads(Path(info).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            named = None
+        named = named.get('document-path') if isinstance(named, dict) else None
+        if isinstance(named, str) and os.path.isabs(named):
+            return [Path(named)]
+    name = os.environ.get('QUARTO_DOCUMENT_FILE')
+    if name:
+        folder = os.environ.get('QUARTO_DOCUMENT_PATH', '')
+        return [Path(folder if os.path.isabs(folder) else os.getcwd(), name)]
+    return sorted(p for p in Path.cwd().iterdir()
+                  if p.suffix in _DOCUMENT_SUFFIXES and p.is_file())
+
+
+def _cell_source(cell, line):
+    """The document and line of line `line` of a notebook cell whose source
+    is `cell`, a list of lines: where the cell's lines appear as one
+    contiguous block in the files `_cell_documents` names. None unless they
+    appear exactly once, in a single file, since a block found twice, or in
+    a file that could not be read, could be either copy."""
+    block = _source_lines(''.join(cell))
+    while block and not block[-1]:
+        block.pop()
+    if not block or not 1 <= line <= len(block):
+        return None
+    found = []
+    for doc in _cell_documents():
+        try:
+            lines = _source_lines(doc.read_text(encoding='utf-8', errors='replace'))
+        except OSError:
+            return None
+        found += [(doc, i + line) for i in range(len(lines) - len(block) + 1)
+                  if lines[i] == block[0] and lines[i:i + len(block)] == block]
+        if len(found) > 1:
+            return None
+    return found[0] if found else None
+
+
+def _recorded_path(source, folder):
+    """`source` as a PDF in `folder` records it: relative to that folder,
+    with forward slashes, or absolute where no relative path exists, as on
+    another drive. Both are resolved first, so that a folder reached
+    through a junction or link and a file reached by its real path still
+    give the path between them that holds from either spelling."""
+    source, folder = os.path.realpath(source), os.path.realpath(folder)
+    try:
+        path = os.path.relpath(source, folder)
+    except ValueError:
+        path = source
+    return Path(path).as_posix()
 
 
 def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
@@ -2433,17 +2557,33 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     `path`.pkl, stamped with this figtools version; `load` reopens it for
     hand-adjustment without rerunning the analysis.
 
-    Each PDF carries a fingerprint of what it was drawn from, in its
+    Each PDF records where in the code `save` was called, under the key
+    `figtools-source` of its document information, as `<file>:<line>`:
+    the file relative to the PDF's folder, with forward slashes (absolute
+    where no relative path exists, as on another drive), and the 1-based
+    line of the call; the caller is the first stack frame outside
+    figtools. Code run in a notebook kernel, as in a Quarto render, is
+    placed in the document whose lines hold the calling cell's lines as
+    one contiguous block: the document Quarto names, or else a `.py` or
+    `.qmd` file in the working directory. When the caller cannot be placed
+    with certainty (a cell found in no document or more than once, code
+    run from a string), the key is left out.
+
+    Each PDF also carries a fingerprint of what it was drawn from, in its
     document information: the figure itself (its pickle, every artist,
     value, colour, font setting and size in it), the rcParams, the fonts
     matplotlib can find, the matplotlib and figtools versions, the target,
-    its width and the digest choice. A PDF whose fingerprint equals the one
-    this call would write is current, and is left as it is, neither checked
-    again nor rewritten, so rerunning a document writes only the figures
-    that changed. A figure that cannot be pickled, as one with a lambda
-    tick formatter, has no fingerprint and is written every time; a named
-    function in place of the lambda gives it one. A font file replaced on
-    disk under the same name is the one change the fingerprint misses.
+    its width, the digest choice and the calling file. A PDF whose
+    fingerprint equals the one this call would write is current, and is
+    left as it is, neither checked again nor rewritten, so rerunning a
+    document writes only the figures that changed. The line of the call is
+    not in the fingerprint: code moved within its file leaves the PDF, and
+    the line it records, as they were until the figure next changes, while
+    a script moved or renamed rewrites it. A figure that cannot be pickled,
+    as one with a lambda tick formatter, has no fingerprint and is written
+    every time; a named function in place of the lambda gives it one. A
+    font file replaced on disk under the same name is the one change to
+    how a figure is drawn that the fingerprint misses.
 
     Returns the paths of the PDFs, written now or found current, and of the
     pickle. Under `fig-check`, `save` measures the figure at each size and
@@ -2494,6 +2634,8 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     # check writes nothing, so it has no use for one.
     fingerprint = None if _checking else _figure_fingerprint(fig)
     context = _write_context() if fingerprint else None
+    caller = None if _checking else _caller()
+    source = _recorded_path(caller[0], path.parent) if caller else None
     written = []
     resized = False
     try:
@@ -2501,7 +2643,8 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
             w = sizes[t]
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
-            key = _pdf_key(fingerprint, context, t, w, embed) if fingerprint else None
+            key = (_pdf_key(fingerprint, context, t, w, embed, source)
+                   if fingerprint else None)
             if key and _stored_key(out) == key:
                 # Drawn from this same figure at this size, and checked
                 # then: drawing and checking it again would give the same.
@@ -2523,6 +2666,8 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                     else {})
             if key:
                 meta[_FINGERPRINT_KEY] = key
+            if source:
+                meta[_SOURCE_KEY] = f'{source}:{caller[1]}'
             # The whole figure, not the tight box `setup` sets for other
             # saves: that box crops to the drawn content and pads it, so
             # each file would miss its target width by its own amount.

@@ -6,11 +6,30 @@ the steps to upgrade.
 
 ## Unreleased
 
-Nothing changes how a figure is drawn. A digest whose recorded project root
-is a junction to the current project, such as a folder's former name that
-Dropbox leaves behind when it moves the folder, is recognised as the
-project's own, and the next render replaces it; before, the render
-refused it as another project's.
+`save` records in each PDF where in the code it was called, so an editor
+can go from a figure in a paper to the line that wrote it. No figure is
+drawn differently, and code written for 0.9 runs unchanged.
+
+### Changes that alter figures
+
+- The PDFs `save` writes gain one entry in their document information,
+  `figtools-source`, and their fingerprint covers the file that called
+  `save`, so the first run after upgrading writes every PDF once more.
+
+### Other changes
+
+- The entry reads `<file>:<line>`: the calling file relative to the PDF's
+  folder, with forward slashes (absolute where no relative path exists, as
+  on another drive), and the line of the call. In a notebook kernel, as in
+  a Quarto render, the file is the document holding the calling cell,
+  found by the cell's lines; a cell found in no document or in two places
+  gets no entry. Code moved within its file leaves a current PDF, and the
+  line it records, as they were; a script moved or renamed writes its PDFs
+  again.
+- A digest whose recorded project root is a junction to the current
+  project, such as a folder's former name that Dropbox leaves behind when
+  it moves the folder, is recognised as the project's own, and the next
+  render replaces it; before, the render refused it as another project's.
 
 ## 0.9.0 (2026-10-19)
 

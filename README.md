@@ -298,17 +298,41 @@ Rerunning a document rewrites only the figures that changed. Drawing,
 checking and writing each PDF is most of what `save` costs, about 16 of
 the 17 seconds a 17-figure document spends in it, and a rewritten file
 also looks new to LaTeX, to version control and to a file sync. So each
-PDF carries a fingerprint, in its document information, of everything
-that decides its bytes: the figure itself, read from its pickle, with
+PDF carries a fingerprint, in its document information, of what it was
+drawn and written from: the figure itself, read from its pickle, with
 every artist, value, colour, font setting and size in it; the rcParams;
-the fonts matplotlib can find; the matplotlib and figtools versions; and
-the target, its width and the digest choice. A PDF whose fingerprint
-matches is current and is left as it is, without the check, which it
-passed when it was written. A change to any of those writes the file
-again. A figure that cannot be pickled, as one with a lambda tick
-formatter, has no fingerprint and is written every time; a named function
-in its place gives it one. A font file replaced on disk under the same
-name is the one change the fingerprint does not see.
+the fonts matplotlib can find; the matplotlib and figtools versions; the
+target, its width and the digest choice; and the file that called
+`save`. A PDF whose fingerprint matches is current and is left as it is,
+without the check, which it passed when it was written. A change to any
+of those writes the file again. A figure that cannot be pickled, as one
+with a lambda tick formatter, has no fingerprint and is written every
+time; a named function in its place gives it one. A font file replaced on
+disk under the same name is the one change to how a figure is drawn that
+the fingerprint does not see.
+
+Each PDF also records where in the code it was saved from, so that an
+editor can go from a figure in a paper to the code that made it. The
+record is an entry of the document information, `figtools-source`,
+reading `<file>:<line>`: the file that called `save`, relative to the
+PDF's folder with forward slashes, and the line of the call. A relative
+path holds when the project moves or syncs to another machine with its
+figures and code together; where none exists, as across two drives, the
+path is absolute. The caller is the first stack frame outside figtools.
+A notebook kernel, which is how Quarto runs a percent script or a
+`.qmd`, compiles each cell under the name of a temporary file and counts
+its lines from the cell's top, so `save` looks for the document whose
+lines hold the cell's lines as one block, and adds the line within the
+cell to where the block starts. The document searched is the one Quarto
+names when it renders, or else every `.py` and `.qmd` in the kernel's
+working directory. A wrong record is worse than none: a cell found in no
+document or in two places, or code run from a string, gets no record.
+The fingerprint covers the calling file but not the line. Code moved
+within a file would otherwise rewrite every figure saved below the
+change, though none of them looks different; a script moved or renamed
+makes its figures' records point nowhere, so it writes them again. The
+recorded line is therefore where the call was when the PDF was last
+written.
 
 ## The style, and what the helpers assume
 
@@ -414,7 +438,7 @@ work as they are.
 | `panels(n=2)` | A row of `n` panels sized as one figure. Returns `(fig, axes)`. |
 | `grid_axis(ax, axis)` | Draws the grid on `'x'`, `'y'` or `'both'` only. |
 | `collisions(fig)` | Lists each label that overlaps something and each text that runs off the figure. Empty when the figure is clean. |
-| `save(fig, path)` | Writes `path.pdf` and `path_slides.pdf` at their exact widths, and refuses any size at which the check fails; a PDF already drawn from the same figure is left as it is. Returns the PDFs' paths. |
+| `save(fig, path)` | Writes `path.pdf` and `path_slides.pdf` at their exact widths, each recording the file and line that called it, and refuses any size at which the check fails; a PDF already drawn from the same figure is left as it is. Returns the PDFs' paths. |
 | `load(path)` | Reopens a figure pickled by `save(..., retouch=True)`, and raises for a pickle that any other figtools version wrote. Unpickling runs code from the file: load only files you wrote. |
 | `PALETTE` | The seven colours, in the order series receive them. |
 | `GREY` | The greys for rules, the grid, notes and shaded periods. |

@@ -107,11 +107,23 @@ Regression coefficients:
   width; `targets=('poster',)` writes only the targets named, and must
   name every target `widths` gives. Include the PDFs in LaTeX with no
   `width=`: they already have their final size.
+- Each PDF records where `save` was called, under the key
+  `figtools-source`, as `<file>:<line>`, the file relative to the PDF's
+  folder, so an editor can go from a figure to its code. Call `save` in
+  the cell or script that draws the figure: the record names the first
+  caller outside figtools, so a wrapper of your own records its own line.
+  In a notebook kernel, as in a Quarto render, the record names the
+  document holding the calling cell: the one Quarto names, else a `.py`
+  or `.qmd` in the working directory. A cell found in no document, or in
+  two places (two identical cells; outside Quarto, a copy of the document
+  in the same folder), gets no record.
 - Each PDF carries a fingerprint of what drew it (the figure, the
   rcParams, the fonts, the matplotlib and figtools versions, the target,
-  its width and the digest choice), and `save` leaves a PDF whose
-  fingerprint matches as it is, so rerunning a document writes only the
-  figures that changed. A figure that cannot be pickled, as one with a
+  its width, the digest choice and the calling file), and `save` leaves a
+  PDF whose fingerprint matches as it is, so rerunning a document writes
+  only the figures that changed. The line of the call is not in it, so
+  after code moves within its file a figure keeps its recorded line until
+  the figure changes. A figure that cannot be pickled, as one with a
   lambda tick formatter, is written every time: pass a named function.
 - The drawing helpers return what they drew in a list, for restyling:
   `rule, label = ft.refline(ax, 0, 'zero')`,
