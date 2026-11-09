@@ -4,7 +4,7 @@ Each release lists first the changes that alter how a figure is drawn, so
 that a project can tell whether upgrading will change its figures, and then
 the steps to upgrade.
 
-## Unreleased
+## 0.10.0 (2026-11-09)
 
 Versions up to 0.9 wrote each figure's plotted data inside its files: into
 every PDF `save` wrote, in its document information, which pdfLaTeX and
