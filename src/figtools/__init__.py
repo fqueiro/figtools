@@ -6,9 +6,9 @@ package does four things: it names series with direct labels that place
 themselves clear of one another and of the data; it measures a drawn figure
 for any label that collides with something (`collisions`), and `save`
 refuses to write one that does; it exports each figure at the physical size
-of its destination, the paper column and the slide; and it embeds a digest
-of the plotted data in every exported figure, so a program can read the
-figure back. Helpers cover the plot types common in empirical work (time
+of its destination, the paper column and the slide; and it keeps a digest
+of each figure's plotted data beside it, so a program can read the figure
+back. Helpers cover the plot types common in empirical work (time
 series with bands, dot plots, pointranges, binned and labelled scatters).
 `style()` applies the same inside a `with` block and undoes it on leaving,
 for code that shares a process with other plotting.
@@ -77,15 +77,17 @@ markers, for restyling), in a list that a notebook displays as nothing, so
 a helper call ending a cell prints no output between the figure and its
 caption. `binscatter` returns its bin means and slope the same way.
 
-A figure displayed in a notebook, and every PDF `save` writes, carries a
-digest of its plotted data inside the image file (`digest`), so a reader that
+Every figure has a digest of its plotted data (`digest`), so a reader that
 cannot see the image, a program or a language model working from the
 rendered document or the paper, can still read the figure: its series,
 values, rules and annotations, and after a Quarto render the document's
-tables and printed output beside them. The digest holds the plotted values
-themselves, the observations of a scatter included: `setup(digest=False)`
-turns it off, and `save(..., digest=False)` leaves it out of one figure's
-files.
+tables and printed output beside them. `save` writes it, with the line of
+code that called it, into a plain-text companion beside the PDFs; a figure
+a notebook displays has it filed in a store outside the project under the
+hash of the image. No figure file carries it, so neither does a paper or a
+page that includes one. The digest holds the plotted values themselves, the
+observations of a scatter included: `setup(digest=False)` turns it off, and
+`save(..., digest=False)` leaves it out of one figure's companion.
 """
 
 import contextlib
@@ -162,7 +164,7 @@ PALETTE = ['#0077BB', '#CC3311', '#009988', '#EE7733',
 # default reads small in a paper column or on a projected slide.
 BASE_SIZE = 11.0
 
-# Whether figures carry their digest: the choice the last `setup` made, which
+# Whether figures have their digest kept: the choice the last `setup` made, which
 # `save` follows unless told otherwise.
 _digest_on = True
 
@@ -320,23 +322,24 @@ def setup(base=BASE_SIZE, digest=True):
     document (a slide deck, a poster) by changing `base`, never by touching
     individual elements.
 
-    `digest` decides whether figures carry a digest of their plotted data
-    (see `figtools.digest`). When true, every figure a notebook kernel
-    displays from here on carries it inside its PNG, and every PDF `save`
-    writes carries it in its metadata. The digest holds the plotted values
-    themselves, the observations of a scatter included, so pass
-    `digest=False` for figures of confidential data; `save(...,
-    digest=...)` decides for one figure's files. The digest is armed before
-    the style is applied because resolving the inline backend may apply the
-    kernel's own rc settings, and the style below has the last word.
+    `digest` decides whether figures have a digest of their plotted data
+    kept (see `figtools.digest`). When true, every figure a notebook kernel
+    displays from here on has its digest filed in the digest store, under
+    the hash of the image, and every companion `save` writes holds it. The
+    digest holds the plotted values themselves, the observations of a
+    scatter included, so pass `digest=False` for figures of confidential
+    data; `save(..., digest=...)` decides for one figure's companion. The
+    digest is armed before the style is applied because resolving the
+    inline backend may apply the kernel's own rc settings, and the style
+    below has the last word.
 
     The effects reach the whole process, not only the figures the calling
     code draws: the rcParams change globally; matplotlib's linear scale is
     replaced by one that refuses fractional ticks on whole-number data (see
     `_WholeNumberLocator`), and every axes any library creates afterwards
     gets it; and in a notebook kernel the formatters that display figures
-    are wrapped to add the digest. `style` applies the same inside a `with`
-    block and undoes it on leaving.
+    are wrapped to file the digest. `style` applies the same inside a
+    `with` block and undoes it on leaving.
     """
     global _digest_on
     if not isinstance(digest, bool):
@@ -442,7 +445,7 @@ def style(base=BASE_SIZE, digest=True):
     For code that shares a process with other plotting. On leaving the
     block the rcParams are as they were on entering it, the linear scale is
     the one registered then (matplotlib's own unless `setup` had run), and
-    the notebook's figure formatters carry the digest exactly when they did
+    the notebook's figure formatters file the digest exactly when they did
     then. Draw and save the figures inside the block: settings read only
     when a figure is saved, such as the resolution of saved images, revert
     on leaving.
@@ -2322,10 +2325,16 @@ def _image_suffixes():
 
 
 # The key under which each PDF `save` writes carries the fingerprint of what
-# it was drawn from, in its document information; a later `save` that would
-# draw the same thing finds the file current and leaves it as it is.
+# it was drawn from; a later `save` that would draw the same thing finds the
+# file current and leaves it as it is. It is the one entry figtools writes
+# into a PDF, and it goes in the document catalog: pdfLaTeX, LuaLaTeX and
+# XeLaTeX never copy an included PDF's catalog into the document that
+# includes it, while pdfLaTeX and LuaLaTeX copy its document information.
 _FINGERPRINT_KEY = 'figtools-fingerprint'
 _FINGERPRINT_ENTRY = re.compile(rb'/' + _FINGERPRINT_KEY.encode() + rb'\s*\(([0-9a-f]{64})\)')
+_STARTXREF = re.compile(rb'startxref\s+(\d+)\s+%%EOF')
+_XREF_SUBSECTION = re.compile(rb'[ \t\r\n]*(\d+)[ \t]+(\d+)[ \t]*(?:\r\n|\r|\n)')
+_XREF_ENTRY = re.compile(rb'(\d{10}) (\d{5}) ([nf])')
 
 # A fixed protocol, so the pickle's bytes do not move with the default of the
 # Python running the document.
@@ -2382,30 +2391,164 @@ def _write_context():
     })
 
 
-def _pdf_key(fingerprint, context, target, width, embed, source):
+def _pdf_key(fingerprint, context, target, width, keep_digest, source):
     """The fingerprint one PDF carries: the figure's, with everything else
     that decides the file's bytes but the line of the call to `save`.
     `source` is the calling file as the PDF records it, or None."""
-    fields = [fingerprint, context, target, width, embed, source]
+    fields = [fingerprint, context, target, width, keep_digest, source]
     return hashlib.sha256(json.dumps(fields).encode()).hexdigest()
 
 
+def _pdf_dict_end(data, i):
+    """The index just past the PDF dictionary that opens at `data[i]`.
+
+    Strings and comments inside it are skipped, so a `>>` or `)` they hold
+    ends nothing.
+    """
+    depth, n = 0, len(data)
+    while i < n:
+        pair = data[i:i + 2]
+        if pair == b'<<':
+            depth += 1
+            i += 2
+            continue
+        if pair == b'>>':
+            depth -= 1
+            i += 2
+            if depth == 0:
+                return i
+            continue
+        c = data[i]
+        if c == 0x28:   # '(': a literal string, balanced, with backslash escapes
+            level = 0
+            while i < n:
+                c = data[i]
+                if c == 0x5C:
+                    i += 2
+                    continue
+                level += (c == 0x28) - (c == 0x29)
+                i += 1
+                if level == 0:
+                    break
+            continue
+        if c == 0x3C:   # '<' alone: a hexadecimal string
+            i = data.index(b'>', i) + 1
+            continue
+        if c == 0x25:   # '%': a comment, to the end of its line
+            while i < n and data[i] not in b'\r\n':
+                i += 1
+            continue
+        i += 1
+    raise ValueError('a PDF dictionary does not end')
+
+
+def _pdf_trailer(data, xref):
+    """The trailer dictionary that closes the cross-reference table at `xref`."""
+    at = data.find(b'trailer', xref)
+    if at < 0:
+        raise ValueError('a cross-reference table has no trailer')
+    at = data.index(b'<<', at)
+    return data[at:_pdf_dict_end(data, at)]
+
+
+def _pdf_object_offset(data, xref, number):
+    """Where object `number` starts, from the classic cross-reference table
+    at `xref` and those its trailers point back to; None when it is free or
+    in none of them."""
+    seen = set()
+    while xref is not None and xref not in seen:
+        seen.add(xref)
+        if data[xref:xref + 4] != b'xref':
+            raise ValueError('no classic cross-reference table where one should be')
+        i = xref + 4
+        while (m := _XREF_SUBSECTION.match(data, i)) is not None:
+            first, count = int(m[1]), int(m[2])
+            i = m.end()
+            if first <= number < first + count:
+                entry = _XREF_ENTRY.match(data, i + 20 * (number - first))
+                if entry is None:
+                    raise ValueError('a cross-reference entry is malformed')
+                return int(entry[1]) if entry[3] == b'n' else None
+            i += 20 * count
+        prev = re.search(rb'/Prev\s+(\d+)', _pdf_trailer(data, xref))
+        xref = int(prev[1]) if prev else None
+    return None
+
+
+def _pdf_catalog(data):
+    """(the last trailer, the catalog's object number and generation, the
+    start and end of the catalog's dictionary, the offset of the last
+    cross-reference table) of a PDF with classic cross-reference tables, as
+    matplotlib writes. ValueError for any other file, such as one whose
+    cross-references are compressed streams."""
+    if not data.startswith(b'%PDF-'):
+        raise ValueError('not a PDF')
+    ends = list(_STARTXREF.finditer(data))
+    if not ends:
+        raise ValueError('a PDF without startxref')
+    xref = int(ends[-1][1])
+    trailer = _pdf_trailer(data, xref)
+    if b'/Encrypt' in trailer:
+        raise ValueError('an encrypted PDF')
+    root = re.search(rb'/Root\s+(\d+)\s+(\d+)\s+R', trailer)
+    if root is None:
+        raise ValueError('a PDF trailer without /Root')
+    number, generation = int(root[1]), int(root[2])
+    at = _pdf_object_offset(data, xref, number)
+    head = re.compile(rb'%d\s+%d\s+obj\s*' % (number, generation)).match(data, at or 0)
+    if at is None or head is None or data[head.end():head.end() + 2] != b'<<':
+        raise ValueError('the catalog is not where the cross-reference table says')
+    return trailer, number, generation, head.end(), _pdf_dict_end(data, head.end()), xref
+
+
+def _mark_current(pdf, key):
+    """Write the fingerprint `key` into the catalog of the PDF matplotlib
+    just wrote at `pdf`.
+
+    matplotlib offers no way to add a key to the catalog, so this appends
+    an incremental update, as the PDF standard provides for changing a file
+    without rewriting it: a new version of the catalog object, a
+    cross-reference table holding that one object, and a trailer pointing
+    back to the table before it. Readers take the newest version.
+    """
+    data = pdf.read_bytes()
+    trailer, number, generation, start, end, xref = _pdf_catalog(data)
+    catalog = data[start:end]
+    if _FINGERPRINT_ENTRY.search(catalog):
+        raise ValueError(f'save: {pdf} already carries a fingerprint')
+    catalog = (catalog[:-2].rstrip()
+               + b' /%s (%s) >>' % (_FINGERPRINT_KEY.encode(), key.encode('ascii')))
+    trailer = re.sub(rb'\s*/Prev\s+\d+', b'', trailer)
+    trailer = trailer[:-2].rstrip() + b' /Prev %d >>' % xref
+    gap = b'' if data.endswith((b'\n', b'\r')) else b'\n'
+    offset = len(data) + len(gap)
+    obj = b'%d %d obj\n%s\nendobj\n' % (number, generation, catalog)
+    # Each entry of the table is 20 bytes: offset, generation, `n`, and a
+    # space before the newline that makes up the two-byte line end.
+    table = b'xref\n%d 1\n%010d %05d n \n' % (number, offset, generation)
+    with open(pdf, 'ab') as f:
+        f.write(gap + obj + table + b'trailer\n' + trailer
+                + b'\nstartxref\n%d\n%%%%EOF\n' % (offset + len(obj)))
+
+
 def _stored_key(pdf):
-    """The fingerprint a PDF written by `save` carries, or None: for a file
-    that is missing, was written another way, or carries the key more than
-    once, none of which can be taken as current."""
+    """The fingerprint a PDF written by `save` carries in its catalog, or
+    None: for a file that is missing, was written another way (an earlier
+    figtools kept the key in the document information), or carries the key
+    more than once, none of which can be taken as current."""
     try:
         data = pdf.read_bytes()
     except FileNotFoundError:
         return None
-    found = _FINGERPRINT_ENTRY.findall(data)
-    return found[0].decode('ascii') if len(found) == 1 else None
+    if len(_FINGERPRINT_ENTRY.findall(data)) != 1:
+        return None
+    try:
+        _, _, _, start, end, _ = _pdf_catalog(data)
+    except ValueError:
+        return None
+    found = _FINGERPRINT_ENTRY.search(data, start, end)
+    return found[1].decode('ascii') if found else None
 
-
-# The key under which each PDF `save` writes where in the code it was
-# called, as `<file>:<line>`, so an editor can go from a figure in a paper
-# to the line that wrote it.
-_SOURCE_KEY = 'figtools-source'
 
 # What a notebook cell's code is looked for in when no Quarto render names
 # its document: the percent scripts and Quarto documents of the folder.
@@ -2452,20 +2595,20 @@ def _source_lines(text):
     return [line.rstrip() for line in re.split(r'\r\n|\r|\n', text)]
 
 
-def _cell_documents():
-    """The files a notebook cell's code may come from.
+def _quarto_document():
+    """The document the Quarto render running this kernel executes, or None
+    when no render started the kernel.
 
-    Quarto names the document it renders in the kernel's environment.
+    Quarto names the document in the kernel's environment.
     `QUARTO_EXECUTE_INFO` is a file holding its absolute path, deleted at
     the end of the render, while a kernel kept between renders (Quarto's
-    kernel daemon) keeps the environment of the render that started it, so
-    later renders find the file gone. `QUARTO_DOCUMENT_PATH` is the
-    document's folder, absolute when the document belongs to a project and
-    otherwise relative to the folder Quarto was started in, which the
-    kernel does not know; such a render runs its code in the document's
-    own folder. A kernel that Quarto did not start (VS Code's interactive
-    window, Jupyter) is searched for in the percent scripts and Quarto
-    documents of its working directory.
+    kernel daemon, which serves one document) keeps the environment of the
+    render that started it, so later renders find the file gone.
+    `QUARTO_DOCUMENT_PATH` is the document's folder, absolute or relative
+    to the folder Quarto was started in, which the kernel does not know
+    (both occur: a single file outside a project gives a relative one, and
+    so did a project whose `_quarto.yml` names no type); such a render runs
+    its code in the document's own folder.
     """
     info = os.environ.get('QUARTO_EXECUTE_INFO')
     if info:
@@ -2475,11 +2618,23 @@ def _cell_documents():
             named = None
         named = named.get('document-path') if isinstance(named, dict) else None
         if isinstance(named, str) and os.path.isabs(named):
-            return [Path(named)]
+            return Path(named)
     name = os.environ.get('QUARTO_DOCUMENT_FILE')
     if name:
         folder = os.environ.get('QUARTO_DOCUMENT_PATH', '')
-        return [Path(folder if os.path.isabs(folder) else os.getcwd(), name)]
+        return Path(folder if os.path.isabs(folder) else os.getcwd(), name)
+    return None
+
+
+def _cell_documents():
+    """The files a notebook cell's code may come from: the document a
+    Quarto render names (`_quarto_document`), or, in a kernel that Quarto
+    did not start (VS Code's interactive window, Jupyter), the percent
+    scripts and Quarto documents of its working directory.
+    """
+    named = _quarto_document()
+    if named is not None:
+        return [named]
     return sorted(p for p in Path.cwd().iterdir()
                   if p.suffix in _DOCUMENT_SUFFIXES and p.is_file())
 
@@ -2509,7 +2664,7 @@ def _cell_source(cell, line):
 
 
 def _recorded_path(source, folder):
-    """`source` as a PDF in `folder` records it: relative to that folder,
+    """`source` as a companion in `folder` records it: relative to that folder,
     with forward slashes, or absolute where no relative path exists, as on
     another drive. Both are resolved first, so that a folder reached
     through a junction or link and a file reached by its real path still
@@ -2547,54 +2702,68 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
     each target `widths` names must be among them, so a width passed for
     a file that is not written is an error rather than ignored.
 
-    `digest` decides whether each PDF carries the figure's digest, its
-    plotted data, in its document information (see `figtools.digest`),
-    from which `render-digest figure <file>` reads the figure back without
-    the document that made it. None follows `setup`'s choice, on unless
-    `setup(digest=False)`; True or False decides for these files alone.
+    Beside the PDFs, `save` writes a plain-text companion, `path`.digest.txt
+    (see `figtools.digest.companion`): the figure's name; a line
+    `source: <file>:<line>` giving where `save` was called; a line per PDF
+    with its size; and the figure's digest, its plotted data, with every
+    value, one per line. The PDFs carry none of it, so a paper or a page
+    that includes a figure carries nothing figtools wrote, and the
+    companion can be tracked in version control, where a change to the
+    figure shows as a diff, while the PDFs are ignored. `digest` decides
+    whether the companion holds the digest: None follows `setup`'s choice,
+    on unless `setup(digest=False)`; True or False decides for this figure
+    alone. Without it the companion holds the source line and says the
+    digest is off.
+
+    The source line's file is relative to the companion's folder, with
+    forward slashes (absolute where no relative path exists, as on another
+    drive), and the line is the 1-based line of the call; the caller is the
+    first stack frame outside figtools. Code run in a notebook kernel, as
+    in a Quarto render, is placed in the document whose lines hold the
+    calling cell's lines as one contiguous block: the document Quarto
+    names, or else a `.py` or `.qmd` file in the working directory. When
+    the caller cannot be placed with certainty (a cell found in no document
+    or more than once, code run from a string), the line is left out.
+
+    The companion is written on every call, through a temporary file, and
+    only when its text differs from what the file holds other than in the
+    line number of the call, so rerunning unchanged code leaves it as it
+    is, and so does code moved within its file: its line is where the call
+    was when the figure last changed.
 
     `retouch=True` also pickles the live figure beside the PDFs, as
     `path`.pkl, stamped with this figtools version; `load` reopens it for
     hand-adjustment without rerunning the analysis.
 
-    Each PDF records where in the code `save` was called, under the key
-    `figtools-source` of its document information, as `<file>:<line>`:
-    the file relative to the PDF's folder, with forward slashes (absolute
-    where no relative path exists, as on another drive), and the 1-based
-    line of the call; the caller is the first stack frame outside
-    figtools. Code run in a notebook kernel, as in a Quarto render, is
-    placed in the document whose lines hold the calling cell's lines as
-    one contiguous block: the document Quarto names, or else a `.py` or
-    `.qmd` file in the working directory. When the caller cannot be placed
-    with certainty (a cell found in no document or more than once, code
-    run from a string), the key is left out.
-
-    Each PDF also carries a fingerprint of what it was drawn from, in its
-    document information: the figure itself (its pickle, every artist,
-    value, colour, font setting and size in it), the rcParams, the fonts
-    matplotlib can find, the matplotlib and figtools versions, the target,
-    its width, the digest choice and the calling file. A PDF whose
-    fingerprint equals the one this call would write is current, and is
-    left as it is, neither checked again nor rewritten, so rerunning a
-    document writes only the figures that changed. The line of the call is
-    not in the fingerprint: code moved within its file leaves the PDF, and
-    the line it records, as they were until the figure next changes, while
-    a script moved or renamed rewrites it. A figure that cannot be pickled,
-    as one with a lambda tick formatter, has no fingerprint and is written
-    every time; a named function in place of the lambda gives it one. A
-    font file replaced on disk under the same name is the one change to
-    how a figure is drawn that the fingerprint misses.
+    Each PDF carries, in its document catalog, which the LaTeX engines do
+    not copy into a document that includes it, a fingerprint of what it was
+    drawn from: the figure itself (its pickle, every artist, value, colour,
+    font setting and size in it), the rcParams, the fonts matplotlib can
+    find, the matplotlib and figtools versions, the target, its width, the
+    digest choice and the calling file. A PDF whose fingerprint equals the
+    one this call would write is current, and is left as it is, neither
+    checked again nor rewritten, so rerunning a document writes only the
+    figures that changed. The line of the call is not in the fingerprint,
+    so code moved within its file leaves the PDF as it was, while a script
+    moved or renamed rewrites it. A figure that cannot be pickled, as one
+    with a lambda tick formatter, has no fingerprint and is written every
+    time; a named function in place of the lambda gives it one. A font file
+    replaced on disk under the same name is the one change to how a figure
+    is drawn that the fingerprint misses. The fingerprint depends on the
+    fonts of the machine that drew the figure, which is why it stays in the
+    PDF and out of the companion.
 
     Returns the paths of the PDFs, written now or found current, and of the
-    pickle. Under `fig-check`, `save` measures the figure at each size and
-    raises as usual but writes nothing, returning the paths it would have
+    pickle; the companion's path is `path`.digest.txt. Under `fig-check`,
+    `save` measures the figure at each size and raises as usual but writes
+    nothing, the companion included, returning the paths it would have
     written, so a check leaves a document's files as they were.
     """
     from . import digest as _digest
     if digest is not None and not isinstance(digest, bool):
         raise TypeError(f'save: digest must be None, True or False, '
                         f'not {digest!r}')
-    embed = _digest_on if digest is None else digest
+    keep_digest = _digest_on if digest is None else digest
     path = Path(path)
     if path.suffix.lower() == '.pdf':
         path = path.with_suffix('')
@@ -2631,19 +2800,24 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
                          f'target widths names')
     w0, h0 = fig.get_size_inches()
     # Taken before any resizing, from the figure as the document left it; a
-    # check writes nothing, so it has no use for one.
+    # check writes nothing, so it has no use for any of them. The digest is
+    # read once, from the figure as handed over, so the companion is the
+    # same whether or not the PDFs were current; nothing it holds depends
+    # on the size the figure is drawn at.
     fingerprint = None if _checking else _figure_fingerprint(fig)
     context = _write_context() if fingerprint else None
     caller = None if _checking else _caller()
     source = _recorded_path(caller[0], path.parent) if caller else None
-    written = []
+    described = _digest.describe(fig, cap=None) if keep_digest and not _checking else None
+    written, files = [], []
     resized = False
     try:
         for t in targets:
             w = sizes[t]
             out = path.with_name(
                 path.name + ('' if t == 'paper' else f'_{t}') + '.pdf')
-            key = (_pdf_key(fingerprint, context, t, w, embed, source)
+            files.append((out.name, w, w * h0 / w0))
+            key = (_pdf_key(fingerprint, context, t, w, keep_digest, source)
                    if fingerprint else None)
             if key and _stored_key(out) == key:
                 # Drawn from this same figure at this size, and checked
@@ -2662,12 +2836,6 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
             if _checking:
                 written.append(out)
                 continue
-            meta = (_digest.pdf_metadata(_digest.describe(fig)) if embed
-                    else {})
-            if key:
-                meta[_FINGERPRINT_KEY] = key
-            if source:
-                meta[_SOURCE_KEY] = f'{source}:{caller[1]}'
             # The whole figure, not the tight box `setup` sets for other
             # saves: that box crops to the drawn content and pads it, so
             # each file would miss its target width by its own amount.
@@ -2675,9 +2843,10 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
             # above refuses text past the figure's edge. Passing
             # bbox_inches=None would not do: savefig reads None as the
             # rcParam.
-            with (mpl.rc_context({'savefig.bbox': 'standard'}),
-                  _digest._quiet_pdf_metadata(), _digest._keep_layout(fig)):
-                fig.savefig(out, metadata=meta)
+            with mpl.rc_context({'savefig.bbox': 'standard'}), _digest._keep_layout(fig):
+                fig.savefig(out)
+            if key:
+                _mark_current(out, key)
             written.append(out)
     finally:
         # A figure every target found current was never resized or drawn
@@ -2685,6 +2854,10 @@ def save(fig, path, targets=None, widths=None, retouch=False, digest=None):
         if resized:
             fig.set_size_inches(w0, h0)
             fig.canvas.draw()
+    if not _checking:
+        record = f'{source}:{caller[1]}' if source else None
+        _digest.write_companion(_digest.companion_path(path),
+                                _digest.companion(path.name, record, files, described))
     if retouch and _checking:
         written.append(path.with_name(path.name + '.pkl'))
     elif retouch:

@@ -1,17 +1,23 @@
-"""Tests for the figure digest: what it reads off a figure, how it travels
-inside the PNG, and what the page extractor writes out.
+"""Tests for the figure digest: what it reads off a figure, how a displayed
+figure's digest reaches the store and a saved figure's its companion, and
+what the page extractor writes out.
 
 A digest that silently dropped a series, mislabelled a bar, or lost its
 figure's caption would still leave a well-formed markdown file, so each
 piece is checked against a figure whose content is known.
 """
 
+import base64
 import datetime as dt
 import hashlib
 import json
+import os
+import shutil
+import struct
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import matplotlib
@@ -20,7 +26,13 @@ import pytest
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from IPython.core.pylabtools import print_figure
+from IPython.core.formatters import (
+    JPEGFormatter,
+    PDFFormatter,
+    PNGFormatter,
+    SVGFormatter,
+)
+from IPython.core.pylabtools import print_figure, retina_figure
 
 import figtools as ft
 from figtools import digest
@@ -303,110 +315,73 @@ def test_long_series_are_thinned_and_say_so():
     assert s['thinned'].startswith(f'{n} points')
 
 
-def test_digest_travels_in_the_png_and_comes_back_intact():
-    fig, ax = plt.subplots()
-    ax.plot([1, 2, 3], [1, 4, 9], label='sq')
-    ax.set_title('t')
-    d = digest.describe(fig)
-    png = print_figure(fig, fmt='png', base64=False, metadata={digest.KEY: digest.encode(d)})
-    assert digest.from_png(png) == json.loads(json.dumps(d))
-    assert digest.from_png(print_figure(fig, fmt='png', base64=False)) is None
+def png_text_keys(data):
+    """The keys of a PNG's text chunks (tEXt, zTXt, iTXt)."""
+    assert data[:8] == b'\x89PNG\r\n\x1a\n'
+    keys, i = [], 8
+    while i + 8 <= len(data):
+        (n,) = struct.unpack('>I', data[i:i + 4])
+        tag = data[i + 4:i + 8]
+        if tag in (b'tEXt', b'zTXt', b'iTXt'):
+            keys.append(data[i + 8:i + 8 + n].partition(b'\x00')[0].decode('latin-1'))
+        i += 12 + n
+    return keys
 
 
-def test_digest_travels_in_a_pdf_and_comes_back_intact():
-    fig, ax = plt.subplots()
-    ax.plot([1, 2, 3], [1, 4, 9], label='sq')
-    d = digest.describe(fig)
-    with digest._quiet_pdf_metadata():
-        pdf = print_figure(fig, fmt='pdf', base64=False, metadata=digest.pdf_metadata(d))
-    assert digest.from_pdf(pdf) == json.loads(json.dumps(d))
-    assert digest.from_image(pdf) == digest.from_pdf(pdf)
-    assert digest.from_pdf(print_figure(fig, fmt='pdf', base64=False)) is None
-    with pytest.raises(ValueError):
-        digest.from_image(b'GIF89a')
+# A figure formatter of each kind as the inline backend registers it, and
+# the IPython registry it goes in.
+DISPLAYED = {
+    'png': ('image/png', lambda fig: print_figure(fig, fmt='png', base64=True)),
+    'retina': ('image/png', lambda fig: retina_figure(fig, base64=True)),
+    'jpeg': ('image/jpeg', lambda fig: print_figure(fig, fmt='jpg', base64=True)),
+    'svg': ('image/svg+xml', lambda fig: print_figure(fig, fmt='svg')),
+    'pdf': ('application/pdf', lambda fig: print_figure(fig, fmt='pdf', base64=True)),
+}
+REGISTRIES = {'image/png': PNGFormatter, 'image/jpeg': JPEGFormatter,
+              'image/svg+xml': SVGFormatter, 'application/pdf': PDFFormatter}
 
 
-def test_a_long_digest_is_split_across_pdf_entries(monkeypatch):
-    monkeypatch.setattr(digest, 'PDF_PIECE', 40)
-    fig, ax = plt.subplots()
-    ax.plot(range(50), range(50), label='s')
-    d = digest.describe(fig)
-    meta = digest.pdf_metadata(d)
-    assert len(meta) > 2 and digest.KEY in meta and f'{digest.KEY}-2' in meta
-    with digest._quiet_pdf_metadata():
-        pdf = print_figure(fig, fmt='pdf', base64=False, metadata=meta)
-    assert digest.from_pdf(pdf) == json.loads(json.dumps(d))
-
-
-def test_save_writes_pdfs_that_carry_the_digest(tmp_path):
-    fig, ax = plt.subplots()
-    ax.plot([1, 2], [1, 2], label='s')
-    ft.label_lines(ax)
-    written = ft.save(fig, tmp_path / 'fig')
-    assert len(written) == 2
-    for path in written:
-        assert digest.from_pdf(path.read_bytes())['panels'][0]['series'][0]['label'] == 's'
-
-
-def test_figure_command_prints_what_an_image_carries(tmp_path, capsys):
+@pytest.mark.parametrize('fmt', DISPLAYED)
+def test_a_displayed_figure_is_returned_as_drawn_and_its_digest_filed(fmt, private_store):
+    """The formatter returns the very object the inline backend's formatter
+    made, so the page gets the image as matplotlib drew it, and the digest
+    goes into the store under the hash of the image's bytes."""
+    from matplotlib.figure import Figure
+    mime, draw = DISPLAYED[fmt]
+    made = []
+    registry = REGISTRIES[mime]()
+    registry.for_type(Figure, lambda fig: made.append(draw(fig)) or made[-1])
+    assert digest._wrap_formatter(registry, digest._FORMATS[mime])
     fig, ax = plt.subplots()
     ax.plot([1, 2], [3, 4], label='s')
-    ft.save(fig, tmp_path / 'fig', targets=('paper',))
-    assert digest.main(['figure', str(tmp_path / 'fig.pdf')]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith('### fig\n') and '| x | s |' in out
-    (tmp_path / 'blank.pdf').write_bytes(print_figure(fig, fmt='pdf', base64=False))
-    assert digest.main(['figure', str(tmp_path / 'blank.pdf')]) == 1
+    out = registry.lookup_by_type(Figure)(fig)
+    assert out is made[-1]
+    data = digest._image_bytes(out, digest._FORMATS[mime])
+    assert b'figtools' not in data
+    if mime == 'image/png':
+        assert png_text_keys(data) == ['Software']   # matplotlib's own, and nothing else
+    entry = private_store / digest.FIGURES / f'{hashlib.sha256(data).hexdigest()}.json'
+    assert entry.is_file()
+    assert digest.recall(data)['panels'][0]['series'][0]['label'] == 's'
+    assert digest.recall(data + b' ') is None
 
 
-def two_figure_pdf(tmp_path):
-    """A stand-in for a rendered document: two figure PDFs' bytes in one file."""
-    fig1, ax1 = plt.subplots()
-    ax1.plot([1, 2], [1, 2], label='first')
-    fig2, ax2 = plt.subplots()
-    ax2.bar(['a', 'b'], [1, 2], label='second')
-    with digest._quiet_pdf_metadata():
-        parts = [print_figure(f, fmt='pdf', base64=False,
-                              metadata=digest.pdf_metadata(digest.describe(f)))
-                 for f in (fig1, fig2)]
-    doc = tmp_path / 'doc.pdf'
-    doc.write_bytes(b''.join(parts))
-    return doc
-
-
-def test_a_document_pdf_yields_every_figure_in_order(tmp_path, capsys):
-    doc = two_figure_pdf(tmp_path)
-    found = digest.pdf_digests(doc.read_bytes())
-    assert [d['panels'][0]['series'][0]['label'] for d in found] == ['first', 'second']
-    assert digest.main(['figure', str(doc)]) == 0
-    out = capsys.readouterr().out
-    assert '### doc, figure 1' in out and '### doc, figure 2' in out
-
-
-def test_extract_pdf_writes_the_figures_beside_the_page_digest(tmp_path):
-    (tmp_path / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
-    src = tmp_path / 'doc.qmd'
-    src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
-    doc = two_figure_pdf(tmp_path)
-    cache = tmp_path / 'cache'
-    out = digest.digest_dir(tmp_path, src, cache)
-    summary = digest.extract_pdf(doc, out / 'pdf', source=src, root=tmp_path)
-    assert summary == '2 figures from the PDF'
-    text = (out / 'pdf' / 'outputs.md').read_text(encoding='utf-8')
-    assert text.startswith('# Figures of doc.qmd, from its PDF render')
-    assert '### figure-1' in text and '### figure-2' in text and '| category | second |' in text
-    assert (out / 'pdf' / 'figure-2.csv').exists()
-    assert digest.check(src, cache=cache) == 0   # the PDF render's manifest stands in
-    html = tmp_path / 'doc.html'
-    html.write_text('<main><h2>S</h2></main>', encoding='utf-8')
-    digest.extract(html, out, source=src, root=tmp_path)
-    assert (out / 'outputs.md').exists() and (out / 'pdf' / 'outputs.md').exists()
+def test_the_store_marks_an_entry_read_when_asked(private_store):
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [3, 4], label='s')
+    entry = digest.remember(digest.describe(fig), b'image', 'png')
+    old = time.time() - 100 * 86400
+    os.utime(entry, (old, old))
+    assert digest.recall(b'image') is not None and entry.stat().st_mtime == pytest.approx(old)
+    digest.recall(b'image', touch=True)
+    assert entry.stat().st_mtime > old + 99 * 86400
 
 
 def test_setup_arms_the_notebook_formatters_once():
     # In its own interpreter: enabling the inline backend is process-wide.
     # Formats are selected before setup, as a Quarto render does, and the
     # shell stands in for a kernel's, which carries the kernel it serves.
+    # The store is the test's own, inherited through FIGTOOLS_DIGEST_DIR.
     code = textwrap.dedent('''
         import base64, json
         import matplotlib
@@ -415,56 +390,61 @@ def test_setup_arms_the_notebook_formatters_once():
         ip = InteractiveShell.instance()
         ip.kernel = object()
         from matplotlib_inline.backend_inline import set_matplotlib_formats
-        set_matplotlib_formats('png', 'pdf')
+        set_matplotlib_formats('png', 'jpeg', 'svg', 'pdf')
         import matplotlib.pyplot as plt
         from matplotlib.figure import Figure
         import figtools as ft
         from figtools import digest
+        mimes = ('image/png', 'image/jpeg', 'image/svg+xml', 'application/pdf')
         fmts = ip.display_formatter.formatters
-        plain = [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')]
+        plain = [fmts[m].lookup_by_type(Figure) for m in mimes]
         ft.setup()
-        first = fmts['image/png'].lookup_by_type(Figure)
-        assert getattr(first, '_figtools_digest', False)
-        assert getattr(fmts['application/pdf'].lookup_by_type(Figure), '_figtools_digest', False)
+        first = [fmts[m].lookup_by_type(Figure) for m in mimes]
+        assert all(getattr(f, '_figtools_digest', False) for f in first)
         assert digest.installed()
         ft.setup()
-        assert fmts['image/png'].lookup_by_type(Figure) is first
+        assert [fmts[m].lookup_by_type(Figure) for m in mimes] == first
         fig, ax = plt.subplots()
         ax.plot([1, 2], [3, 4], label='s')
-        d = digest.from_png(base64.b64decode(first(fig)))
-        pdf = fmts['application/pdf'].lookup_by_type(Figure)(fig)
-        assert digest.from_pdf(base64.b64decode(pdf)) == d
+        labels = []
+        for mime, f in zip(mimes, first):
+            data = digest._image_bytes(f(fig), digest._FORMATS[mime])
+            assert b'figtools' not in data
+            labels.append(digest.recall(data)['panels'][0]['series'][0]['label'])
         assert digest.uninstall() and not digest.installed()
-        assert [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')] == plain
-        assert digest.from_png(base64.b64decode(fmts['image/png'].lookup_by_type(Figure)(fig))) is None
-        print(json.dumps(d['panels'][0]['series'][0]['label']))
+        assert [fmts[m].lookup_by_type(Figure) for m in mimes] == plain
+        print(json.dumps(labels))
         ''')
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip().splitlines()[-1] == '"s"'
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == ['s'] * 4
 
 
 def fake_shell(kernel=True):
-    """An IPython shell with real PNG and PDF formatter registries, a kernel
-    or none, and an `enable_matplotlib` that records its calls."""
+    """An IPython shell with real image formatter registries, each holding
+    the formatter the inline backend registers, a kernel or none, a
+    namespace, and an `enable_matplotlib` that records its calls."""
     from functools import partial
     from types import SimpleNamespace
 
-    from IPython.core.formatters import PDFFormatter, PNGFormatter
     from matplotlib.figure import Figure
 
     # The shape the inline backend registers: print_figure with keywords.
-    png = partial(print_figure, fmt='png', base64=False)
-    pdf = partial(print_figure, fmt='pdf', base64=False)
-    fmts = {'image/png': PNGFormatter(), 'application/pdf': PDFFormatter()}
-    fmts['image/png'].for_type(Figure, png)
-    fmts['application/pdf'].for_type(Figure, pdf)
+    formats = {'image/png': partial(print_figure, fmt='png', base64=True),
+               'image/jpeg': partial(print_figure, fmt='jpg', base64=True),
+               'image/svg+xml': partial(print_figure, fmt='svg'),
+               'application/pdf': partial(print_figure, fmt='pdf', base64=True)}
+    fmts = {mime: REGISTRIES[mime]() for mime in formats}
+    for mime, f in formats.items():
+        fmts[mime].for_type(Figure, f)
     calls = []
+    ns = {}
     ip = SimpleNamespace(display_formatter=SimpleNamespace(formatters=fmts),
-                         enable_matplotlib=calls.append)
+                         enable_matplotlib=calls.append, user_ns=ns,
+                         push=lambda names, interactive=True: ns.update(names))
     if kernel:
         ip.kernel = object()
-    return ip, calls, (png, pdf)
+    return ip, calls, formats
 
 
 def pending_backend(monkeypatch, ip):
@@ -472,6 +452,13 @@ def pending_backend(monkeypatch, ip):
     import IPython.core.getipython
     monkeypatch.setattr(IPython.core.getipython, 'get_ipython', lambda: ip)
     monkeypatch.setattr(matplotlib, 'get_backend', lambda *a, **k: None)
+
+
+def inline_resolved(monkeypatch):
+    """The inline backend's configuration has run, as it has in a notebook."""
+    import matplotlib_inline.backend_inline as inline
+    monkeypatch.setattr(inline.configure_inline_support, 'current_backend', 'inline',
+                        raising=False)
 
 
 def test_install_leaves_a_shell_without_a_kernel_alone(monkeypatch):
@@ -484,36 +471,261 @@ def test_install_leaves_a_shell_without_a_kernel_alone(monkeypatch):
     assert digest.install() is False
     assert calls == [] and not digest.installed()
     fmts = ip.display_formatter.formatters
-    assert [fmts[m].lookup_by_type(Figure) for m in ('image/png', 'application/pdf')] == list(plain)
+    assert {m: fmts[m].lookup_by_type(Figure) for m in plain} == plain
 
 
 def test_uninstall_puts_back_what_install_wrapped(monkeypatch):
-    import matplotlib_inline.backend_inline as inline
     from matplotlib.figure import Figure
-    ip, calls, (png, pdf) = fake_shell()
+    ip, calls, plain = fake_shell()
     pending_backend(monkeypatch, ip)
-    # The inline backend's configuration has run, as it has in a notebook.
-    monkeypatch.setattr(inline.configure_inline_support, 'current_backend', 'inline', raising=False)
+    inline_resolved(monkeypatch)
     fmts = ip.display_formatter.formatters
     assert not digest.installed() and digest.uninstall() is False
     assert digest.install() is True and calls == []
-    assert digest.installed()
-    fig, ax = plt.subplots()
-    ax.plot([1, 2], [3, 4], label='s')
-    assert digest.from_png(fmts['image/png'].lookup_by_type(Figure)(fig)) is not None
+    assert all(getattr(fmts[m].lookup_by_type(Figure), '_figtools_digest', False) for m in plain)
+    assert ip.user_ns == {}   # no Quarto render, so no render is recorded
     assert digest.uninstall() is True
-    assert fmts['image/png'].lookup_by_type(Figure) is png
-    assert fmts['application/pdf'].lookup_by_type(Figure) is pdf
+    assert {m: fmts[m].lookup_by_type(Figure) for m in plain} == plain
     assert not digest.installed() and digest.uninstall() is False
-    # with only one of the two wrapped, the digest is still armed
+    # with only one of them wrapped, the digest is still armed
     digest._wrap_formatter(fmts['application/pdf'], 'pdf')
     assert digest.installed()
+
+
+def test_install_warns_when_no_image_format_is_displayed(monkeypatch):
+    from matplotlib.figure import Figure
+    ip, _, plain = fake_shell()
+    for mime in plain:
+        ip.display_formatter.formatters[mime].pop(Figure)
+    pending_backend(monkeypatch, ip)
+    inline_resolved(monkeypatch)
+    with pytest.warns(UserWarning, match='none of PNG, JPEG, SVG and PDF'):
+        assert digest.install() is False
 
 
 def test_installed_and_uninstall_are_safe_outside_ipython(monkeypatch):
     import IPython.core.getipython
     monkeypatch.setattr(IPython.core.getipython, 'get_ipython', lambda: None)
     assert digest.installed() is False and digest.uninstall() is False and digest.install() is False
+
+
+@pytest.fixture
+def pdf_render(tmp_path, monkeypatch):
+    """A Quarto render of `code/doc.py` in a project, displaying figures as
+    PDF only, as Quarto's setup cell leaves the formatters for `fig-format:
+    pdf`: (shell, project, document)."""
+    from matplotlib.figure import Figure
+    project = tmp_path / 'proj'
+    (project / 'code').mkdir(parents=True)
+    (project / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    doc = project / 'code' / 'doc.py'
+    doc.write_text('# %%\nimport figtools\n', encoding='utf-8')
+    monkeypatch.delenv('QUARTO_EXECUTE_INFO', raising=False)
+    monkeypatch.setenv('QUARTO_DOCUMENT_FILE', 'doc.py')
+    monkeypatch.setenv('QUARTO_DOCUMENT_PATH', 'code')   # relative, as under the daemon
+    monkeypatch.chdir(project / 'code')
+    ip, _, _ = fake_shell()
+    for mime in ('image/png', 'image/jpeg', 'image/svg+xml'):
+        ip.display_formatter.formatters[mime].pop(Figure)
+    pending_backend(monkeypatch, ip)
+    inline_resolved(monkeypatch)
+    return ip, project, doc
+
+
+def show_pdf(ip, label):
+    from matplotlib.figure import Figure
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [1, 2], label=label)
+    ip.display_formatter.formatters['application/pdf'].lookup_by_type(Figure)(fig)
+    plt.close(fig)
+
+
+def test_a_pdf_render_records_its_figures_in_the_order_drawn(pdf_render):
+    """Quarto deletes a PDF render's figure files, so the kernel records the
+    digests in drawing order, in a folder of the render's own. The next
+    render, in the same kernel as under Quarto's daemon, starts after
+    `%reset` has cleared the namespace, and gets a folder of its own;
+    post-render takes the newest and drops the rest."""
+    ip, project, doc = pdf_render
+    renders = digest.digest_dir(project, doc) / digest.RENDERS
+    assert digest.install()
+    first, = renders.iterdir()   # opened by setup, before any figure
+    info = json.loads((first / 'render.json').read_text(encoding='utf-8'))
+    assert info['sha256'] == hashlib.sha256(doc.read_bytes()).hexdigest()
+    assert info['document'] == str(doc.resolve())
+    show_pdf(ip, 'a')
+    assert digest.install()   # a second setup in the same render changes nothing
+    show_pdf(ip, 'b')
+    assert sorted(p.name for p in first.iterdir()) == [
+        'figure-0001.json', 'figure-0002.json', 'render.json']
+    second_figure = json.loads((first / 'figure-0002.json').read_text(encoding='utf-8'))
+    assert second_figure['panels'][0]['series'][0]['label'] == 'b'
+    ip.user_ns.clear()   # Quarto's %reset, at the end of one render and the start of the next
+    assert digest.install()
+    show_pdf(ip, 'c')
+    second, = (p for p in renders.iterdir() if p != first)
+    assert [p.name for p in second.glob('figure-*.json')] == ['figure-0001.json']
+    pdf = project / 'code' / 'doc.pdf'
+    pdf.write_bytes(b'%PDF-1.5\n')
+    out = digest.digest_dir(project, doc)
+    assert digest.extract_pdf(pdf, out / 'pdf', doc, project) == '1 figure from the PDF render'
+    assert [p.name for p in renders.iterdir()] == [second.name]
+    text = (out / 'pdf' / 'outputs.md').read_text(encoding='utf-8')
+    assert '### figure-1' in text and '| x | c |' in text and '| x | a |' not in text
+
+
+def test_a_render_outside_a_project_records_nothing(pdf_render, private_store):
+    ip, project, _ = pdf_render
+    (project / '_quarto.yml').unlink()
+    assert digest.install()
+    show_pdf(ip, 'a')
+    assert sorted(p.name for p in private_store.iterdir()) == [digest.FIGURES]
+
+
+def write_render(renders, name, sha, figures):
+    folder = renders / name
+    folder.mkdir(parents=True)
+    (folder / 'render.json').write_text(json.dumps({'sha256': sha}), encoding='utf-8')
+    for n in figures:
+        d = {'v': 1, 'panels': [{'xkind': 'number', 'ykind': 'number', 'series': [
+            {'kind': 'line', 'label': f'{name}/{n}', 'color': None, 'x': [1, 2], 'y': [1, 2]}]}]}
+        (folder / f'figure-{n:04d}.json').write_text(json.dumps(d), encoding='utf-8')
+
+
+def test_the_newest_render_of_the_present_source_is_taken(tmp_path):
+    """A render of another version of the source is never taken: a source
+    whose figures went could otherwise get those of an older render. One
+    whose figures are not numbered without a gap was not written whole."""
+    renders = tmp_path / digest.RENDERS
+    write_render(renders, '100-1', 'aaa', [1, 2])
+    write_render(renders, '200-1', 'aaa', [1])
+    write_render(renders, '300-1', 'bbb', [1])
+    write_render(renders, '400-1', 'aaa', [1, 3])
+    folder, found = digest._latest_render(renders, 'aaa')
+    assert folder.name == '200-1'
+    assert [d['panels'][0]['series'][0]['label'] for d in found] == ['200-1/1']
+    assert digest._latest_render(renders, 'ccc') == (None, [])
+    assert digest._latest_render(tmp_path / 'none', 'aaa') == (None, [])
+
+
+def test_a_pdf_render_with_no_recorded_figures_says_so(tmp_path):
+    (tmp_path / '_quarto.yml').write_text('project: {}\n', encoding='utf-8')
+    src = tmp_path / 'doc.qmd'
+    src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
+    pdf = tmp_path / 'doc.pdf'
+    pdf.write_bytes(b'%PDF-1.5\n')
+    cache = tmp_path / 'cache'
+    out = digest.digest_dir(tmp_path, src, cache)
+    write_render(out / digest.RENDERS, '100-1', 'another source', [1])
+    assert digest.extract_pdf(pdf, out / 'pdf', src, tmp_path) == '0 figures from the PDF render'
+    text = (out / 'pdf' / 'outputs.md').read_text(encoding='utf-8')
+    assert text.startswith('# Figures of doc.qmd, from its PDF render')
+    assert 'No figure digests were recorded for this source' in text
+    assert (out / digest.RENDERS / '100-1').is_dir()   # kept: nothing was taken in its place
+    assert digest.check(src, cache=cache) == 0   # the PDF render's manifest stands in
+    html = tmp_path / 'doc.html'
+    html.write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    digest.extract(html, out, source=src, root=tmp_path, cache=cache)
+    assert (out / 'outputs.md').exists() and (out / 'pdf' / 'outputs.md').exists()
+    assert (out / digest.RENDERS / '100-1').is_dir()   # a page's digest keeps the renders
+
+
+def test_the_companion_states_each_panel_series_rule_and_note():
+    fig, (a, b) = plt.subplots(1, 2)
+    a.plot([2000, 2001], [1.0, 2.5], label='north')
+    ft.refline(a, 1.5, 'mid')
+    ft.shade(a, 2000.2, 2000.4, 'slump')
+    a.set_ylabel('Share\twith a tab')
+    a.set_title('Left')
+    b.bar(['x', 'y'], [3, 4], label='counts')
+    b.annotate('peak', xy=(1, 4))
+    b.text(0.5, 0.9, 'N = 2', transform=b.transAxes)
+    files = [('fig.pdf', 5.9, 4.425), ('fig_slides.pdf', 4.1, 3.075)]
+    text = digest.companion('fig', '../code/doc.py:12', files, digest.describe(fig, cap=None))
+    assert text.splitlines()[:5] == [
+        'figure: fig', 'source: ../code/doc.py:12', 'file: fig.pdf, 5.9 x 4.425 in',
+        'file: fig_slides.pdf, 4.1 x 3.075 in',
+        ('digest: every plotted value, one per line, to six significant digits; '
+         'tab-separated columns')]
+    assert '\npanel 1\ntitle: Left\nx: (number)\ny: Share with a tab (number)\n' in text
+    assert '\nseries 1: north (line, #0077bb)\nx\ty\n2000\t1\n2001\t2.5\n' in text
+    assert '\nreference line: y = 1.5 "mid"\nshaded: x from 2000.2 to 2000.4 "slump"\n' in text
+    assert '\npanel 2\nx: (category)\ny: (number)\n' in text
+    assert '\nseries 1: counts (bars, vertical, #0077bb)\ncategory\tvalue\nx\t3\ny\t4\n' in text
+    assert '\npoint: peak at y, 4 (#000000)\nnote: N = 2 (#000000)\n' in text
+    assert text.endswith('\n') and not text.endswith('\n\n') and '\r' not in text
+    assert digest.companion_files(text) == ['fig.pdf', 'fig_slides.pdf']
+
+
+def test_the_digest_is_the_same_drawn_or_not_and_at_any_size():
+    """`save` reads the digest before drawing, and leaves undrawn a figure
+    whose PDFs are current; a notebook may have drawn the figure first. The
+    placement that runs at each draw moves and wraps labels, which the
+    digest does not record, so the companion is the same either way."""
+    def build():
+        fig, (a, b) = plt.subplots(1, 2, figsize=(8, 4))
+        yr = np.arange(2000, 2016)
+        a.plot(yr, np.sin(yr / 3), label='a label long enough to be wrapped')
+        a.plot(yr, np.cos(yr / 3), label='short')
+        ft.refline(a, 0.5, 'a rule')
+        ft.label_lines(a)
+        b.plot([1, 2, 3], [1, 2, 3], color=ft.PALETTE[0])
+        b.plot([1, 2, 3], [3, 2, 1], color=ft.PALETTE[1])
+        ft.key(b, [('up', ft.PALETTE[0]), ('down', ft.PALETTE[1])])
+        ft.label_points(b, [1, 3], [1, 1], ['p', 'q'])
+        return fig
+
+    def read(fig):
+        d = digest.describe(fig, cap=None)
+        d.pop('size_in')
+        return d
+
+    undrawn = read(build())
+    fig = build()
+    fig.canvas.draw()
+    assert read(fig) == undrawn
+    fig.set_size_inches(4.1, 2.0)
+    fig.canvas.draw()
+    assert read(fig) == undrawn
+
+
+def test_a_companion_keeps_every_point_the_store_thins():
+    fig, ax = plt.subplots()
+    n = digest.SERIES_CAP + 7
+    ax.plot(np.arange(n), np.arange(n) * 0.5, label='long')
+    assert len(digest.describe(fig)['panels'][0]['series'][0]['x']) == digest.SERIES_CAP
+    text = digest.companion('fig', None, [('fig.pdf', 5.9, 4.0)], digest.describe(fig, cap=None))
+    rows = text.split('series 1: long (line, #0077bb)\nx\ty\n', 1)[1].splitlines()
+    assert len(rows) == n and rows[1] == '1\t0.5' and rows[-1] == f'{n - 1}\t{(n - 1) / 2:g}'
+    assert 'thinned' not in text
+
+
+def test_a_companion_without_the_digest_keeps_its_source_and_files():
+    text = digest.companion('fig', 'make.py:3', [('fig.pdf', 5.9, 4.0)], None)
+    assert text == ('figure: fig\nsource: make.py:3\nfile: fig.pdf, 5.9 x 4 in\n'
+                    'digest: off, so no values are recorded\n')
+
+
+def test_a_companion_differing_only_in_the_line_of_the_call_is_left_as_it_is(tmp_path):
+    path = tmp_path / 'fig.digest.txt'
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [3, 4], label='s')
+    text = digest.companion('fig', 'make.py:3', [('fig.pdf', 5.9, 4.0)],
+                            digest.describe(fig, cap=None))
+    assert digest.write_companion(path, text)
+    before = path.stat().st_mtime_ns, path.read_bytes()
+    assert not digest.write_companion(path, text)
+    assert not digest.write_companion(path, text.replace('make.py:3', 'make.py:30'))
+    assert (path.stat().st_mtime_ns, path.read_bytes()) == before
+    assert digest.write_companion(path, text.replace('make.py:3', 'draw.py:3'))
+    assert digest.write_companion(path, text.replace('3\t4', '3\t5'))
+    assert digest.write_companion(path, text.replace('source: make.py:3\n', ''))
+    assert 'source:' not in path.read_text(encoding='utf-8')
+    assert b'\r' not in path.read_bytes()
+    # git on Windows may check the file out with CRLF line ends: the same text
+    path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
+    assert not digest.write_companion(path, text.replace('source: make.py:3\n', ''))
+    assert [p.name for p in tmp_path.iterdir()] == ['fig.digest.txt']   # no temporary file left
 
 
 def test_markdown_merges_series_on_a_shared_x_and_thins_large_tables():
@@ -561,15 +773,19 @@ PAGE = '''
 
 
 def test_extract_writes_digests_tables_and_text_from_a_rendered_page(tmp_path):
+    """Each image the page embeds finds its digest in the store by the hash
+    of its bytes; one displayed without figtools has none there."""
     fig, ax = plt.subplots()
     ax.plot([1, 2, 3], [2, 4, 6], label='double')
-    png = print_figure(fig, fmt='png', base64=True,
-                       metadata={digest.KEY: digest.encode(digest.describe(fig))})
+    png = print_figure(fig, fmt='png', base64=False)
+    digest.remember(digest.describe(fig), png, 'png')
+    ax.plot([1, 2, 3], [3, 3, 3], label='flat')
     plain = print_figure(fig, fmt='png', base64=True)
     src = tmp_path / 'doc.qmd'
     src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
     html = tmp_path / 'doc.html'
-    html.write_text(PAGE.format(png=png, plain=plain), encoding='utf-8')
+    html.write_text(PAGE.format(png=base64.b64encode(png).decode(), plain=plain),
+                    encoding='utf-8')
     out = tmp_path / 'cache' / 'proj' / 'doc'
     summary, split = digest.extract(html, out, source=src, root=tmp_path)
     assert summary == '2 figures, 1 table, 1 text block'
@@ -580,8 +796,8 @@ def test_extract_writes_digests_tables_and_text_from_a_rendered_page(tmp_path):
     assert 'Table of contents' not in text
     assert '### fig-double. Figure 1: Doubling.' in text and '| x | double |' in text
     assert '| idx | a |\n|---|---|\n| r1 | 1.5 |' in text
-    assert '### fig-2\n\nNo digest in this image' in text
-    assert (out / 'fig-double.png').exists() and (out / 'fig-double.csv').exists()
+    assert '### fig-2\n\nNo digest in the store for this image' in text
+    assert (out / 'fig-double.png').read_bytes() == png and (out / 'fig-double.csv').exists()
     assert (out / 'fig-2.png').exists() and not (out / 'fig-2.csv').exists()
     manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['sha256'] == hashlib.sha256(src.read_bytes()).hexdigest()
@@ -595,6 +811,9 @@ LINKED = '''
 <figcaption class="quarto-float-caption">Figure&nbsp;1: Linked.</figcaption></figure></div>
 <div class="cell"><div class="cell-output cell-output-display"><img src="my%20doc_files/figure-html/gone.png"></div></div>
 <div class="cell"><div class="cell-output cell-output-display"><img src="https://example.org/fig.png"></div></div>
+<div id="fig-svg" class="cell"><div class="cell-output cell-output-display"><img src="my%20doc_files/figure-html/fig-svg-output-1.svg"></div></div>
+<div id="fig-jpeg" class="cell"><div class="cell-output cell-output-display"><img src="my%20doc_files/figure-html/fig-jpeg-output-1.jpeg"></div></div>
+<div id="fig-inline" class="cell"><div class="cell-output cell-output-display"><img src="data:image/svg+xml;base64,{svg}"></div></div>
 </main></body></html>
 '''
 
@@ -602,22 +821,29 @@ LINKED = '''
 def test_extract_reads_images_linked_beside_the_page(tmp_path):
     """Unless a page embeds its resources, Quarto links each figure's file,
     written to `<document>_files/figure-html/` beside the page, inside the
-    output folder when there is one."""
+    output folder when there is one. A PNG, a JPEG and an SVG each find
+    their digest by their bytes, the SVG's being its text as UTF-8."""
     fig, ax = plt.subplots()
     ax.plot([1, 2, 3], [2, 4, 6], label='double')
-    png = print_figure(fig, fmt='png', base64=False,
-                       metadata={digest.KEY: digest.encode(digest.describe(fig))})
+    d = digest.describe(fig)
+    png = print_figure(fig, fmt='png', base64=False)
+    jpeg = print_figure(fig, fmt='jpg', base64=False)
+    svg = print_figure(fig, fmt='svg').encode('utf-8')
+    for data, kind in ((png, 'png'), (jpeg, 'jpeg'), (svg, 'svg')):
+        digest.remember(d, data, kind)
     site = tmp_path / '_site'
     figures = site / 'my doc_files' / 'figure-html'
     figures.mkdir(parents=True)
     (figures / 'fig-linked-output-1.png').write_bytes(png)
+    (figures / 'fig-svg-output-1.svg').write_bytes(svg)
+    (figures / 'fig-jpeg-output-1.jpeg').write_bytes(jpeg)
     src = tmp_path / 'my doc.qmd'
     src.write_text('---\ntitle: T\n---\n', encoding='utf-8')
     html = site / 'my doc.html'
-    html.write_text(LINKED, encoding='utf-8')
+    html.write_text(LINKED.format(svg=base64.b64encode(svg).decode()), encoding='utf-8')
     out = tmp_path / 'cache' / 'proj' / 'my doc'
     summary, _ = digest.extract(html, out, source=src, root=tmp_path)
-    assert summary == '3 figures, 0 tables, 0 text blocks'
+    assert summary == '6 figures, 0 tables, 0 text blocks'
     text = (out / 'outputs.md').read_text(encoding='utf-8')
     assert '### fig-linked. Figure 1: Linked.' in text and '| x | double |' in text
     assert (out / 'fig-linked.png').read_bytes() == png and (out / 'fig-linked.csv').exists()
@@ -626,8 +852,11 @@ def test_extract_reads_images_linked_beside_the_page(tmp_path):
     assert ('### fig-3\n\nImage linked by the absolute address https://example.org/fig.png, '
             'which is not fetched; nothing digested.') in text
     manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
-    assert manifest['figures'] == [{'label': 'fig-linked', 'digest': True,
-                                    'files': ['fig-linked.png', 'fig-linked.csv']}]
+    assert manifest['figures'] == [
+        {'label': label, 'digest': True, 'files': [f'{label}.{ext}', f'{label}.csv']}
+        for label, ext in (('fig-linked', 'png'), ('fig-svg', 'svg'), ('fig-jpeg', 'jpeg'),
+                           ('fig-inline', 'svg'))]
+    assert (out / 'fig-inline.svg').read_bytes() == svg
 
 
 def test_extract_refuses_to_clear_a_folder_it_did_not_write(tmp_path):
@@ -749,12 +978,14 @@ def test_post_render_finds_each_source_through_the_output_folder(tmp_path, monke
     (site / 'sub').mkdir(parents=True, exist_ok=True)
     (site / 'doc.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
     (site / 'sub' / 'other.html').write_text('<main><h2>O</h2></main>', encoding='utf-8')
-    two_figure_pdf(site)   # doc.pdf, the same document rendered to PDF
+    (site / 'doc.pdf').write_bytes(b'%PDF-1.5\n')   # the same document rendered to PDF
     (site / 'search.json').write_text('{}', encoding='utf-8')
     quarto_env(monkeypatch, tmp_path, output_dir,
                ['doc.html', 'doc.pdf', str(Path('sub') / 'other.html'), 'search.json'])
     cache = tmp_path / 'cache'
     monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', str(cache))   # read when post_render runs
+    sha = hashlib.sha256((tmp_path / 'doc.qmd').read_bytes()).hexdigest()
+    write_render(cache / tmp_path.name / 'doc' / digest.RENDERS, '100-1', sha, [1, 2])
     digest.post_render()
     base = cache / tmp_path.name
     doc = json.loads((base / 'doc' / 'manifest.json').read_text(encoding='utf-8'))
@@ -778,8 +1009,8 @@ def test_post_render_skips_pages_and_pdfs_no_document_made(tmp_path, monkeypatch
     site.mkdir()
     for name in ('doc', 'about'):
         (site / f'{name}.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
-    two_figure_pdf(site).rename(site / 'My-Book.pdf')
-    two_figure_pdf(site).rename(site / 'about.pdf')
+    for name in ('My-Book', 'about'):
+        (site / f'{name}.pdf').write_bytes(b'%PDF-1.5\n')
     quarto_env(monkeypatch, tmp_path, '_site', ['doc.html', 'about.html', 'My-Book.pdf',
                                                 'about.pdf'])
     cache = tmp_path / 'cache'
@@ -787,10 +1018,8 @@ def test_post_render_skips_pages_and_pdfs_no_document_made(tmp_path, monkeypatch
     out = capsys.readouterr().out.splitlines()
     page, book, pdf = (Path('_site', f) for f in ('about.html', 'My-Book.pdf', 'about.pdf'))
     assert f'digest: skipped {page}: its source about.md runs no figtools code' in out
-    assert (f"digest: skipped {book}: no single document made it, as with a book's PDF; "
-            f'render-digest figure {book} prints the digests it carries') in out
-    assert (f'digest: skipped {pdf}: its source about.md runs no figtools code; '
-            f'render-digest figure {pdf} prints the digests it carries') in out
+    assert f"digest: skipped {book}: no single document made it, as with a book's PDF" in out
+    assert f'digest: skipped {pdf}: its source about.md runs no figtools code' in out
     assert [p.name for p in (cache / tmp_path.name).iterdir()] == ['doc']
 
 
@@ -939,8 +1168,108 @@ def test_commands_with_an_unusable_cache_folder_exit_2(tmp_path, capsys, monkeyp
     src.write_text('x', encoding='utf-8')
     for value in ('rel/dir', ''):
         monkeypatch.setenv('FIGTOOLS_DIGEST_DIR', value)
-        for argv in (['check', str(src)], ['where', str(src)]):
+        for argv in (['check', str(src)], ['where', str(src)], ['figure', str(src)],
+                     ['prune']):
             assert digest.main(argv) == 2, (value, argv)
             err = capsys.readouterr().err
             assert err.startswith(f'render-digest {argv[0]}: ')
             assert 'FIGTOOLS_DIGEST_DIR' in err and err.count('\n') == 1
+
+
+def test_figure_command_reads_a_companion_or_the_store(tmp_path, capsys):
+    """A PDF `save` wrote, and each variant of it, leads to its companion;
+    any other image to the digest the store holds under its hash."""
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [3, 4], label='s')
+    ft.label_lines(ax)
+    ft.save(fig, tmp_path / 'my_fig')
+    for name in ('my_fig.pdf', 'my_fig_slides.pdf', 'my_fig.digest.txt'):
+        assert digest.main(['figure', str(tmp_path / name)]) == 0, name
+        out = capsys.readouterr().out
+        assert out.startswith('figure: my_fig\nsource: ') and '\n1\t3\n2\t4\n' in out
+    png = print_figure(fig, fmt='png', base64=False)
+    (tmp_path / 'shown.png').write_bytes(png)
+    assert digest.main(['figure', str(tmp_path / 'shown.png')]) == 1
+    assert 'shown.png: no digest' in capsys.readouterr().err
+    digest.remember(digest.describe(fig), png, 'png')
+    assert digest.main(['figure', str(tmp_path / 'shown.png')]) == 0
+    assert capsys.readouterr().out.startswith('### shown\n')
+    (tmp_path / 'my_fig.digest.txt').unlink()
+    assert digest.main(['figure', str(tmp_path / 'my_fig.pdf'),
+                        str(tmp_path / 'missing.pdf')]) == 1
+    err = capsys.readouterr().err
+    assert 'my_fig.pdf: no digest' in err and 'missing.pdf: no such file' in err
+
+
+def test_a_variant_finds_only_a_companion_that_lists_it(tmp_path):
+    """`a_b_slides.pdf` belongs to `a_b`; `a.digest.txt`, for a figure saved
+    as `a`, does not list it and is passed over."""
+    for name in ('a', 'a_b'):
+        (tmp_path / f'{name}{digest.COMPANION}').write_text(digest.companion(
+            name, None, [(f'{name}.pdf', 5.9, 4), (f'{name}_slides.pdf', 4.1, 3)], None))
+    assert digest.find_companion(tmp_path / 'a_b_slides.pdf') == tmp_path / 'a_b.digest.txt'
+    assert digest.find_companion(tmp_path / 'a_slides.pdf') == tmp_path / 'a.digest.txt'
+    assert digest.find_companion(tmp_path / 'a_poster.pdf') is None
+    assert digest.find_companion(tmp_path / 'c.pdf') is None
+
+
+def test_prune_lists_what_went_stale_and_removes_it_when_told(tmp_path, monkeypatch, capsys,
+                                                               private_store):
+    live = quarto_project(tmp_path / 'live' / 'proj', 'L')
+    gone = quarto_project(tmp_path / 'gone' / 'old', 'G')
+    nested = gone.parent / 'doc' / 'part.qmd'   # its digest folder sits inside doc's
+    nested.parent.mkdir()
+    nested.write_text('---\ntitle: P\n---\n', encoding='utf-8')
+    nested.with_suffix('.html').write_text('<main><h2>S</h2></main>', encoding='utf-8')
+    folders = {}
+    for src in (live, gone, nested):
+        root = src.parent if src is not nested else gone.parent
+        folders[src] = digest.digest_dir(root, src)
+        digest.extract(src.with_suffix('.html'), folders[src], source=src, root=root)
+    write_render(folders[gone] / digest.RENDERS, '100-1', 'sha', [1])
+    shutil.rmtree(tmp_path / 'gone')
+    d = {'v': 1, 'panels': []}
+    fresh, old = digest.remember(d, b'fresh', 'png'), digest.remember(d, b'old', 'png')
+    then = time.time() - (digest.STALE_DAYS + 1) * 86400
+    os.utime(old, (then, then))
+    figures = live.parent / 'figures'
+    figures.mkdir()
+    for name in ('kept', 'lost'):
+        (figures / f'{name}{digest.COMPANION}').write_text(digest.companion(
+            name, None, [(f'{name}.pdf', 5.9, 4), (f'{name}_slides.pdf', 4.1, 3)], None))
+    (figures / 'kept_slides.pdf').write_bytes(b'%PDF-1.4\n')   # the paper file went; this stays
+    (figures / 'notes.digest.txt').write_text('not a companion\n')
+    found = digest.prune(live.parent)
+    assert sorted(doc for _, doc in found['documents']) == sorted(
+        [Path(gone.parent.resolve(), 'doc.qmd'), Path(gone.parent.resolve(), 'doc/part.qmd')])
+    assert found['renders'] == [] and found['figures'] == [old]
+    assert found['companions'] == [figures / 'lost.digest.txt']
+    monkeypatch.setattr('builtins.input', lambda prompt: 'n')
+    assert digest.main(['prune', str(live.parent)]) == 0
+    out = capsys.readouterr().out
+    assert 'nothing removed' in out and str(figures / 'lost.digest.txt') in out
+    assert old.exists() and folders[gone].exists()
+    assert digest.main(['prune', str(live.parent), '--yes']) == 0
+    out = capsys.readouterr().out
+    assert f'removed {folders[gone]}' in out and 'removed 1 store entries' in out
+    assert not old.exists() and fresh.exists()
+    assert not (figures / 'lost.digest.txt').exists() and (figures / 'kept.digest.txt').exists()
+    assert not (private_store / 'old').exists()   # the gone project's folder, left empty
+    assert (folders[live] / 'manifest.json').exists()
+    assert digest.prune(live.parent) == {'documents': [], 'renders': [], 'figures': [],
+                                         'companions': []}
+    assert digest.main(['prune']) == 0
+    assert 'nothing to remove' in capsys.readouterr().out
+
+
+def test_prune_finds_the_recorded_renders_of_a_document_that_went(tmp_path, private_store):
+    """A document rendered to PDF whose post-render never ran leaves only
+    its recorded renders."""
+    folder = private_store / 'proj' / 'doc' / digest.RENDERS / '100-1'
+    folder.mkdir(parents=True)
+    (folder / 'render.json').write_text(json.dumps({
+        'document': str(tmp_path / 'proj' / 'doc.py'), 'project_root': str(tmp_path / 'proj'),
+        'sha256': 'x'}), encoding='utf-8')
+    found = digest.prune()
+    assert found['renders'] == [(folder, tmp_path / 'proj' / 'doc.py')]
+    assert found['documents'] == []

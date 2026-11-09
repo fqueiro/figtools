@@ -18,6 +18,7 @@ import linecache
 import pickle
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import warnings
@@ -1349,7 +1350,7 @@ def test_save_takes_targets_from_any_iterable_and_refuses_none_or_a_string(tmp_p
         ft.save(fig, tmp_path / 'none', targets=[])
     with pytest.raises(ValueError, match=r"\('paper',\)"):
         ft.save(fig, tmp_path / 'str', targets='paper')
-    assert sorted(p.name for p in tmp_path.iterdir()) == ['gen.pdf']
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['gen.digest.txt', 'gen.pdf']
     plt.close(fig)
 
 
@@ -1524,7 +1525,9 @@ def test_figures_built_alike_save_at_one_size(tmp_path):
 # --- the digest switch ----------------------------------------------------------
 
 def _carries_digest(pdf):
-    return digest.from_pdf(pdf.read_bytes()) is not None
+    """Whether the companion of a PDF `save` wrote holds the figure's values."""
+    text = digest.read_companion(digest.find_companion(pdf))
+    return 'digest: off' not in text and '\nseries 1: ' in text
 
 
 def _small_figure():
@@ -1684,34 +1687,152 @@ def test_the_fingerprint_is_the_same_in_two_fresh_processes():
     assert runs[0] == runs[1]
 
 
-# --- the source record: where in the code each PDF was saved from ------------
+# --- what a saved PDF carries, and its companion -------------------------------
 
-_PDF_ESCAPES = {ord('n'): b'\n', ord('r'): b'\r', ord('\\'): b'\\',
-                ord('('): b'(', ord(')'): b')'}
+def test_a_saved_pdf_carries_nothing_figtools_wrote_but_its_fingerprint(tmp_path):
+    """The digest and the source go to the companion. The one entry left is
+    the fingerprint, in the catalog, which LaTeX never copies into a
+    document that includes the figure; the document information, which
+    pdfLaTeX and LuaLaTeX copy, holds only matplotlib's own entries."""
+    ft.setup()
+    fig = _labelled_figure()
+    for pdf in ft.save(fig, tmp_path / 'fig'):
+        data = pdf.read_bytes()
+        assert data.count(b'figtools') == 1
+        assert b'/figtools-digest' not in data and b'/figtools-source' not in data
+        trailer, _, _, start, end, _ = ft._pdf_catalog(data)
+        assert b'/figtools-fingerprint' in data[start:end] and b'/Type /Catalog' in data[start:end]
+        info = re.search(rb'/Info\s+(\d+)\s+0\s+R', trailer)[1]
+        at = ft._pdf_object_offset(data, int(trailer.split(b'/Prev ')[1].split()[0]), int(info))
+        body = data[at:data.index(b'endobj', at)]
+        assert b'Matplotlib' in body and b'figtools' not in body
+        assert ft._stored_key(pdf) is not None
+    plt.close(fig)
 
+
+def test_the_fingerprint_goes_in_by_an_incremental_update_any_reader_takes(tmp_path):
+    """The update appends a new version of the catalog, a cross-reference
+    table holding it and a trailer pointing back; the original bytes stay
+    as matplotlib wrote them."""
+    ft.setup()
+    fig = _labelled_figure()
+    plain = tmp_path / 'plain.pdf'
+    with matplotlib.rc_context({'savefig.bbox': 'standard'}):
+        fig.savefig(plain)
+    original = plain.read_bytes()
+    ft._mark_current(plain, 'ab' * 32)
+    data = plain.read_bytes()
+    assert data.startswith(original) and data.endswith(b'%%EOF\n')
+    assert ft._stored_key(plain) == 'ab' * 32
+    with pytest.raises(ValueError, match='already carries'):
+        ft._mark_current(plain, 'cd' * 32)
+    if shutil.which('qpdf'):
+        check = subprocess.run(['qpdf', '--check', str(plain)], capture_output=True,
+                               text=True, check=False)
+        assert check.returncode == 0, check.stdout + check.stderr
+    plt.close(fig)
+
+
+def test_a_pdf_with_its_fingerprint_in_the_document_information_is_rewritten(tmp_path):
+    """figtools 0.9 kept the fingerprint, and the digest, in the document
+    information, which a paper including the figure copies; such a PDF is
+    not taken as current, so the first run after upgrading rewrites it."""
+    ft.setup()
+    first, _ = _saved(tmp_path, targets=('paper',))
+    key = first['fig.pdf'][0]
+    fig = _labelled_figure()
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='Unknown infodict keyword')
+        fig.savefig(tmp_path / 'fig.pdf', metadata={'figtools-fingerprint': key})
+    plt.close(fig)
+    assert ft._stored_key(tmp_path / 'fig.pdf') is None
+    again, _ = _saved(tmp_path, targets=('paper',))
+    assert again['fig.pdf'][0] == key
+    assert b'figtools' not in again['fig.pdf'][2].split(b'/Type /Catalog')[0]
+
+
+def _companion_text(path):
+    return (path.parent / f'{path.name}.digest.txt').read_bytes().decode('utf-8')
+
+
+def test_save_writes_a_companion_holding_every_value(tmp_path):
+    ft.setup()
+    fig = _labelled_figure()
+    ft.save(fig, tmp_path / 'fig')
+    plt.close(fig)
+    text = _companion_text(tmp_path / 'fig')
+    head = text.split('\n\n')[0].splitlines()
+    assert head[0] == 'figure: fig' and head[1].startswith('source: ')
+    assert head[2:4] == ['file: fig.pdf, 5.9 x 4.425 in', 'file: fig_slides.pdf, 4.1 x 3.075 in']
+    rows = text.split('series 1: first (line, #009988)\nx\ty\n')[1].split('\n\n')[0].splitlines()
+    assert len(rows) == 20 and rows[0] == '2000\t1' and rows[-1] == '2019\t2'
+    assert '\nseries 2: second (line, #0077bb)\n' in text
+    assert b'\r' not in (tmp_path / 'fig.digest.txt').read_bytes()
+
+
+def test_the_companion_is_the_same_in_two_fresh_processes(tmp_path):
+    """Nothing in the companion depends on the run: no time, no memory
+    address, no order a set or a dict could change."""
+    script = tmp_path / 'make.py'
+    script.write_text(
+        'import matplotlib; matplotlib.use("Agg")\n'
+        'import sys\n'
+        'import matplotlib.pyplot as plt, numpy as np, figtools as ft\n'
+        'ft.setup()\n'
+        'fig, ax = plt.subplots()\n'
+        'yr = np.arange(2000, 2020)\n'
+        'ax.plot(yr, np.sin(yr / 3), label="a")\n'
+        'ax.scatter(yr, np.cos(yr / 3), label="b")\n'
+        'ft.refline(ax, 0, "zero")\n'
+        'ft.label_lines(ax)\n'
+        'ft.save(fig, sys.argv[1])\n', encoding='utf-8')
+    texts = []
+    for run in ('one', 'two'):
+        folder = tmp_path / run
+        folder.mkdir()
+        subprocess.run([sys.executable, str(script), str(folder / 'fig')], check=True)
+        texts.append((folder / 'fig.digest.txt').read_bytes())
+    assert texts[0] == texts[1]
+    assert b'\nseries 2: b (points, #0077bb)\nx\ty\n2000\t' in texts[0]
+
+
+def test_save_leaves_a_current_companion_and_restores_a_missing_one(tmp_path):
+    """The companion is written on every call, through the comparison, so
+    one deleted or left stale comes back though the PDFs are current."""
+    ft.setup()
+    _saved(tmp_path)
+    companion = tmp_path / 'fig.digest.txt'
+    before = companion.stat().st_mtime_ns, companion.read_bytes()
+    pdfs, _ = _saved(tmp_path)
+    assert (companion.stat().st_mtime_ns, companion.read_bytes()) == before
+    companion.unlink()
+    again, _ = _saved(tmp_path)
+    assert again == pdfs   # the PDFs current, untouched
+    assert companion.read_bytes() == before[1]
+    companion.write_bytes(before[1].replace(b'2019\t2', b'2019\t3'))
+    _saved(tmp_path)
+    assert companion.read_bytes() == before[1]
+
+
+def test_a_companion_without_the_digest_keeps_the_source(tmp_path):
+    ft.setup()
+    fig = _small_figure()
+    ft.save(fig, tmp_path / 'off', targets=('paper',), digest=False)
+    plt.close(fig)
+    lines = _companion_text(tmp_path / 'off').splitlines()
+    assert lines[0] == 'figure: off' and lines[1].startswith('source: ')
+    assert lines[2:] == ['file: off.pdf, 5.9 x 3 in', 'digest: off, so no values are recorded']
+
+
+# --- the source record: where in the code each figure was saved from ----------
 
 def _pdf_source(pdf):
-    """The `figtools-source` entry of a PDF, read from its raw bytes, or
-    None. matplotlib writes a metadata string as a PDF literal string,
-    ASCII as it is and anything else as UTF-16BE behind the byte-order mark
-    FE FF, escaping backslashes, parentheses, CR and LF with a backslash; so
-    the string ends at the first parenthesis not escaped."""
-    data = pdf.read_bytes()
-    starts = [m.end() for m in re.finditer(rb'/figtools-source\s*\(', data)]
-    if not starts:
-        return None
-    assert len(starts) == 1
-    out, i = bytearray(), starts[0]
-    while data[i] != ord(')'):
-        if data[i] == ord('\\'):
-            i += 1
-            out += _PDF_ESCAPES[data[i]]
-        else:
-            out.append(data[i])
-        i += 1
-    raw = bytes(out)
-    return (raw[2:].decode('utf-16-be') if raw.startswith(b'\xfe\xff')
-            else raw.decode('ascii'))
+    """The `source:` line of the companion of a PDF `save` wrote, without
+    its label, or None when the companion has none."""
+    for line in digest.read_companion(digest.find_companion(pdf)).splitlines():
+        if line.startswith('source: '):
+            return line[len('source: '):]
+    return None
 
 
 def test_save_records_the_file_and_line_that_called_it(tmp_path):
@@ -1726,8 +1847,9 @@ def test_save_records_the_file_and_line_that_called_it(tmp_path):
         file, _, at = _pdf_source(pdf).rpartition(':')
         assert int(at) == line
         assert '\\' not in file
-        # Relative to the PDF's folder; absolute where the test file and the
-        # temporary folder lie on different drives, as on Windows CI.
+        # Relative to the companion's folder, the PDFs' too; absolute where
+        # the test file and the temporary folder lie on different drives, as
+        # on Windows CI.
         assert (folder / file).resolve() == Path(__file__).resolve()
 
 
@@ -1739,25 +1861,28 @@ def _run_script(script, out):
     plt.close(fig)
 
 
-def test_a_pdf_follows_its_script_but_not_the_line_of_the_call(tmp_path):
-    """Code moved within its file leaves a current PDF as it is, with the
-    line it recorded; a script moved or renamed writes it again."""
+def test_a_figure_follows_its_script_but_not_the_line_of_the_call(tmp_path):
+    """Code moved within its file leaves a current PDF and its companion as
+    they are, the companion with the line it recorded; a script moved or
+    renamed writes both again."""
     ft.setup()
     code, figures = tmp_path / 'code', tmp_path / 'figures'
     code.mkdir()
     figures.mkdir()
     script, pdf = code / 'make.py', figures / 'fig.pdf'
+    companion = figures / 'fig.digest.txt'
     call = 'ft.save(fig, out, targets=("paper",))\n'
     script.write_text(call)
     _run_script(script, figures / 'fig')
     assert _pdf_source(pdf) == '../code/make.py:1'
-    before = pdf.stat().st_mtime_ns, pdf.read_bytes()
+    before = [(f.stat().st_mtime_ns, f.read_bytes()) for f in (pdf, companion)]
     script.write_text('\n\n\n' + call)
     _run_script(script, figures / 'fig')
-    assert (pdf.stat().st_mtime_ns, pdf.read_bytes()) == before
+    assert [(f.stat().st_mtime_ns, f.read_bytes()) for f in (pdf, companion)] == before
     renamed = script.rename(code / 'draw.py')
     _run_script(renamed, figures / 'fig')
     assert _pdf_source(pdf) == '../code/draw.py:4'
+    assert pdf.stat().st_mtime_ns != before[0][0]
 
 
 def test_the_source_record_keeps_a_path_beyond_ascii(tmp_path):
@@ -1768,8 +1893,8 @@ def test_the_source_record_keeps_a_path_beyond_ascii(tmp_path):
     script, pdf = code / 'make.py', figures / 'fig.pdf'
     script.write_text('ft.save(fig, out, targets=("paper",))\n')
     _run_script(script, figures / 'fig')
-    assert re.search(rb'/figtools-source\s*\(\xfe\xff', pdf.read_bytes())   # UTF-16BE
     assert _pdf_source(pdf) == '../código/make.py:1'
+    assert '../código/make.py:1'.encode() in (figures / 'fig.digest.txt').read_bytes()   # UTF-8
 
 
 # A percent-format document, and one of its cells as a notebook kernel

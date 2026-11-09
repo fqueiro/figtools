@@ -74,10 +74,13 @@ with the change.
 ## The digest
 
 The digest is read by programs, so its format is a contract, described in
-the docstring of `src/figtools/digest.py`. A new kind of artist or helper
-mark that `describe` learns to read gets a test that draws it and checks
-the values and labels that come back, and `markdown` and `csv_rows` learn
-to write it.
+the docstring of `src/figtools/digest.py`; so is the companion `save`
+writes beside each figure, whose `source:` line an editor reads. A new
+kind of artist or helper mark that `describe` learns to read gets a test
+that draws it and checks the values and labels that come back, and
+`markdown`, `csv_rows` and `companion` learn to write it. The companion's
+text must stay deterministic: two runs of the same code give the same
+bytes.
 
 ## The changelog
 

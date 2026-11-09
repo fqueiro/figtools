@@ -74,6 +74,21 @@ def test_check_runs_a_qmd_and_honours_its_figure_size(tmp_path):
     assert tuple(plt.rcParams['figure.figsize']) == (5.0, 5.0)
 
 
+def test_figs_writes_plain_pngs_whose_digest_is_in_the_store(tmp_path):
+    """The PNGs `--figs` writes carry nothing figtools wrote, and
+    `render-digest figure` reads each back from the store by its hash."""
+    from figtools import digest
+    doc = tmp_path / 'doc.qmd'
+    doc.write_text(QMD, encoding='utf-8')
+    figs = tmp_path / 'figs'
+    figs.mkdir()
+    assert fc.check(doc, figs) == (1, [])
+    png, = figs.iterdir()
+    data = png.read_bytes()
+    assert b'figtools' not in data
+    assert digest.recall(data)['panels'][0]['series'][0]['label'] == 'a'
+
+
 def test_figsize_merges_project_and_document_the_way_quarto_does(tmp_path):
     (tmp_path / '_quarto.yml').write_text(
         'fig-height: 3\nformat:\n  html:\n    fig-width: 9\n', encoding='utf-8')

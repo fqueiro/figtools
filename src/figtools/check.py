@@ -62,7 +62,7 @@ import matplotlib.pyplot as plt
 
 import figtools
 from figtools import collisions
-from figtools.digest import KEY, describe, encode
+from figtools.digest import describe, remember
 
 # Exit codes, shared by the worker that checks a document and the command
 # that gathers the workers' results.
@@ -314,10 +314,13 @@ def run(doc, bodies, ns, figs):
                 warnings.simplefilter('ignore')
                 hits = collisions(fig)
                 if figs is not None:
-                    # The same digest a rendered page's image carries, so
+                    # A plain PNG, with its digest filed in the store under
+                    # the image's hash, as a displayed figure's is, so
                     # `render-digest figure` reads these too.
-                    fig.savefig(figs / f'{doc.stem}_{n}.png', dpi=110,
-                                metadata={KEY: encode(describe(fig))})
+                    buffer = io.BytesIO()
+                    fig.savefig(buffer, format='png', dpi=110)
+                    (figs / f'{doc.stem}_{n}.png').write_bytes(buffer.getvalue())
+                    remember(describe(fig), buffer.getvalue(), 'png')
             found += [f'  fig {n} panel {p}  {kind:12} {what}'
                       for p, kind, what in hits]
             plt.close(fig)

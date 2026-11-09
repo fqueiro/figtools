@@ -6,30 +6,80 @@ the steps to upgrade.
 
 ## Unreleased
 
-`save` records in each PDF where in the code it was called, so an editor
-can go from a figure in a paper to the line that wrote it. No figure is
-drawn differently, and code written for 0.9 runs unchanged.
+Versions up to 0.9 wrote each figure's plotted data inside its files: into
+every PDF `save` wrote, in its document information, which pdfLaTeX and
+LuaLaTeX copy into any document that includes the figure, so a paper
+carried the data of every figure in it; and into every PNG a notebook
+displayed, in a text chunk, so a self-contained HTML page carried the data
+of every figure on it. This release keeps that data out of every figure
+file, and so out of every paper and page. `save` writes it instead into a
+plain-text companion beside the PDFs, with the line of code that called
+`save`, and a displayed figure's digest goes into a store outside the
+project. No figure is drawn differently, and code written for 0.9 runs
+unchanged unless it calls the functions of `figtools.digest` that wrote or
+read digests inside image files (*Migrating from 0.9* below).
 
 ### Changes that alter figures
 
-- The PDFs `save` writes gain one entry in their document information,
-  `figtools-source`, and their fingerprint covers the file that called
-  `save`, so the first run after upgrading writes every PDF once more.
+- The PDFs `save` writes carry no digest. Their one figtools entry is the
+  fingerprint, which moves from the document information to the document
+  catalog, which no LaTeX engine copies into a document. The first run
+  after upgrading writes every PDF once more.
+- Figures a notebook kernel displays, as PNG, JPEG, SVG or PDF, are the
+  images matplotlib draws, with nothing added.
 
 ### Other changes
 
-- The entry reads `<file>:<line>`: the calling file relative to the PDF's
-  folder, with forward slashes (absolute where no relative path exists, as
-  on another drive), and the line of the call. In a notebook kernel, as in
-  a Quarto render, the file is the document holding the calling cell,
-  found by the cell's lines; a cell found in no document or in two places
-  gets no entry. Code moved within its file leaves a current PDF, and the
-  line it records, as they were; a script moved or renamed writes its PDFs
-  again.
+- `save(fig, path)` writes `path.digest.txt` beside the PDFs: the figure's
+  name; `source: <file>:<line>`, where `save` was called, the file relative
+  to the companion's folder with forward slashes (absolute where no
+  relative path exists) and, in a notebook kernel such as a Quarto render's,
+  the document holding the calling cell, left out when the caller cannot be
+  placed with certainty; a `file:` line per PDF with its size; and every
+  plotted value, one per line, with no thinning. The text is
+  deterministic, and `save` rewrites the file only when it changes other
+  than in the line number of the call, so companions can be tracked in
+  version control, where a change to a figure shows as a diff, while the
+  PDFs are ignored. It is written on every call, also when the PDFs are
+  current, and not under `fig-check`. With the digest off it holds the
+  source and file lines and says the digest is off.
+- A figure a notebook kernel displays has its digest filed in the store,
+  `~/.local/share/render-digests/_figures/<sha256>.json` (or under
+  `FIGTOOLS_DIGEST_DIR`), keyed by the hash of the image's bytes. The
+  post-render hook finds each figure of a rendered page there by the hash
+  of the image the page embeds or links, now for SVG and JPEG figures as
+  well as PNG and PDF.
+- A document rendered to PDF has its figures' digests recorded by the
+  kernel in drawing order, since Quarto deletes the figure files after
+  LaTeX has included them; the hook takes the newest render of the
+  document's present source. It no longer reads digests out of the
+  compiled PDF.
+- `render-digest figure <file>` prints the companion of a PDF `save` wrote
+  or of one of its variants, or the store's digest of an image a kernel
+  displayed, and says when there is none.
+- `render-digest prune [<project folder>]` lists the digests of documents
+  and projects that no longer exist, store entries neither written nor
+  read in 30 days and, given a project folder, companions none of whose
+  PDFs exists, and removes them after asking (`--yes` skips the question).
+- `fig-check --figs` writes plain PNGs and files their digests in the
+  store.
 - A digest whose recorded project root is a junction to the current
   project, such as a folder's former name that Dropbox leaves behind when
   it moves the folder, is recognised as the project's own, and the next
   render replaces it; before, the render refused it as another project's.
+
+### Migrating from 0.9
+
+- Figures and documents made with 0.9 or earlier still carry their data.
+  Rerunning the code that saves the figures rewrites the PDFs without it;
+  rebuild the papers that include them and render the pages again.
+- Track `*.digest.txt` beside the figures and ignore the PDFs, if the
+  repository tracked the PDFs to review figure changes.
+- `figtools.digest` no longer has `KEY`, `encode`, `decode`, `png_text`,
+  `from_png`, `pdf_metadata`, `pdf_digests`, `from_pdf` or `from_image`,
+  which wrote and read digests inside image files. Read a saved figure's
+  digest from its companion (`find_companion`, `read_companion`) and a
+  displayed figure's from the store (`recall`).
 
 ## 0.9.0 (2026-10-19)
 

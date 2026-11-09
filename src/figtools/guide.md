@@ -2,8 +2,9 @@
 
 figtools is a matplotlib style with helpers for research figures: direct
 labels in place of legends, a check that no label collides with anything,
-export at the physical size of a paper and of a slide, and a digest of each
-figure's data embedded in the file. This guide says what to do.
+export at the physical size of a paper and of a slide, and a plain-text
+digest of each figure's data, with the line of code that saved it, kept
+beside the figure. This guide says what to do.
 `python -m figtools readme` prints the README, which gives the reasons, and
 `help(ft.<function>)` gives each function's full reference.
 
@@ -107,32 +108,43 @@ Regression coefficients:
   width; `targets=('poster',)` writes only the targets named, and must
   name every target `widths` gives. Include the PDFs in LaTeX with no
   `width=`: they already have their final size.
-- Each PDF records where `save` was called, under the key
-  `figtools-source`, as `<file>:<line>`, the file relative to the PDF's
-  folder, so an editor can go from a figure to its code. Call `save` in
-  the cell or script that draws the figure: the record names the first
-  caller outside figtools, so a wrapper of your own records its own line.
-  In a notebook kernel, as in a Quarto render, the record names the
-  document holding the calling cell: the one Quarto names, else a `.py`
-  or `.qmd` in the working directory. A cell found in no document, or in
-  two places (two identical cells; outside Quarto, a copy of the document
-  in the same folder), gets no record.
+- Beside the PDFs, `save(fig, path)` writes `path.digest.txt`, a plain-text
+  companion: the line `source: <file>:<line>` where `save` was called (the
+  file relative to the companion's folder), a `file:` line per PDF, and
+  every value the figure plots, one per line. Track the companions in git
+  and ignore the PDFs (`*.pdf` in the figures folder's `.gitignore`), so a
+  change to a figure shows as a diff of its values. Read a figure's data
+  from its companion (`render-digest figure <file>.pdf` prints it for a
+  PDF or a variant such as `path_slides.pdf`), never from the PDF, which
+  holds none.
+- Call `save` in the cell or script that draws the figure: the source line
+  names the first caller outside figtools, so a wrapper of your own
+  records its own line. In a notebook kernel, as in a Quarto render, it
+  names the document holding the calling cell: the one Quarto names, else
+  a `.py` or `.qmd` in the working directory. A cell found in no document,
+  or in two places (two identical cells; outside Quarto, a copy of the
+  document in the same folder), gets no source line.
+- The companion is rewritten only when its text changes other than in the
+  line number of the call, so after code moves within its file the
+  recorded line is a hint: look near it for the `save` that names the
+  figure. Rerunning unchanged code leaves the companion as it is.
 - Each PDF carries a fingerprint of what drew it (the figure, the
   rcParams, the fonts, the matplotlib and figtools versions, the target,
   its width, the digest choice and the calling file), and `save` leaves a
   PDF whose fingerprint matches as it is, so rerunning a document writes
-  only the figures that changed. The line of the call is not in it, so
-  after code moves within its file a figure keeps its recorded line until
-  the figure changes. A figure that cannot be pickled, as one with a
-  lambda tick formatter, is written every time: pass a named function.
+  only the figures that changed. A figure that cannot be pickled, as one
+  with a lambda tick formatter, is written every time: pass a named
+  function.
 - The drawing helpers return what they drew in a list, for restyling:
   `rule, label = ft.refline(ax, 0, 'zero')`,
   `stems, dots = ft.dotplot(ax, names, est)`,
   `xm, ym, slope = ft.binscatter(ax, x, y)`. A notebook displays the list
   as nothing.
-- The digest embeds every plotted point, a scatter's observations
-  included. For confidential data use `ft.setup(digest=False)`, or
-  `ft.save(fig, path, digest=False)` for one figure.
+- The digest holds every plotted point, a scatter's observations
+  included, and a tracked companion publishes them with the repository.
+  For confidential data use `ft.setup(digest=False)`, or
+  `ft.save(fig, path, digest=False)` for one figure; the companion then
+  keeps only its source and file lines.
 
 ## Checking and reading figures
 
@@ -165,5 +177,14 @@ Regression coefficients:
   figure), under `~/.local/share/render-digests` or `FIGTOOLS_DIGEST_DIR`.
   The hook reads figures linked beside the page as well as embedded ones,
   so `embed-resources` is not needed, and skips pages made from plain
-  `.md`. `render-digest figure <file>.pdf` reads a saved figure's data
-  back.
+  `.md`; a PDF render's figures are under `pdf/` in the same folder,
+  numbered in drawing order.
+- A figure a notebook displays carries nothing figtools wrote: its digest
+  is filed in the store, `_figures/` under the same root, keyed by the
+  hash of the image, so `render-digest figure <image>` reads it back for a
+  PNG, JPEG, SVG or PDF a kernel displayed. Pages and PNGs need no
+  tracking for this; ignore them in git with the PDFs.
+- `render-digest prune [<project folder>]` lists the digests of documents
+  that no longer exist, store entries unused for 30 days, and companions
+  in the project whose PDFs are gone, and removes them after asking
+  (`--yes` without).

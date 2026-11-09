@@ -24,7 +24,8 @@ steps; this file holds the working rules.
 - The digest is a contract with the projects' render step (`digest.py`'s
   docstring has the mechanism): a new artist type or helper mark that
   `describe` learns to read gets a test that checks the values and labels
-  that come back, and `markdown` and `csv_rows` learn to write it.
+  that come back, and `markdown`, `csv_rows` and `companion` learn to write
+  it.
 - Run `uv run pytest` before committing. A release is a pushed tag
   `vX.Y.Z` after `uv version X.Y.Z` (CONTRIBUTING.md); never tag or
   publish unasked, since PyPI never takes a version back.
